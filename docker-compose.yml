@@ -1,0 +1,46 @@
+# all parts of the shop - start with: docker compose up -d
+services:
+  # message queue - the client server sends buys here, the API server reads them
+  kafka:
+    image: apache/kafka:4.2.0
+    environment:
+      # one node that is both broker and controller (KRaft, no ZooKeeper)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      # other containers reach Kafka as kafka:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # single node = 1 copy of everything
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  # database - the API server saves the purchases here
+  mongo:
+    image: mongo:8.0
+    volumes:
+      # keep the data when the container restarts
+      - mongo-data:/data/db
+
+  # API server - reads buys from Kafka, saves to MongoDB, returns the list
+  api:
+    build: ./api
+    depends_on:
+      - kafka
+      - mongo
+
+  # client web server - the only part open to the laptop: http://localhost:8080
+  client:
+    build: ./client
+    ports:
+      - "8080:8000"
+    depends_on:
+      - kafka
+      - api
+
+volumes:
+  mongo-data:

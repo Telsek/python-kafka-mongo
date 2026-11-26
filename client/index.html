@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Leaky Pipeline - Sweets & Artifacts</title>
+<style>
+  :root {
+    --bg: #15111f;
+    --panel: #211a30;
+    --panel2: #2b2240;
+    --text: #f3ecdf;
+    --muted: #b3a8c4;
+    --gold: #e8b64c;
+    --green: #5cc98a;
+    --red: #ef5d5d;
+    --line: #3a2f52;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  /* top bar */
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
+    padding: 14px 28px;
+    background: rgba(21, 17, 31, 0.95);
+    border-bottom: 1px solid var(--line);
+  }
+  .logo { font-size: 24px; color: var(--gold); letter-spacing: 1px; }
+  .logo small { display: block; font-size: 13px; color: var(--muted); letter-spacing: 3px; text-transform: uppercase; }
+  .who { display: flex; gap: 10px; align-items: center; }
+  .who input {
+    padding: 8px 12px; width: 160px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  .stats { display: flex; gap: 22px; color: var(--muted); font-size: 14px; }
+  .stats b { display: block; color: var(--gold); font-size: 20px; }
+
+  main { max-width: 1150px; margin: 0 auto; padding: 10px 24px 60px; }
+  h2 { color: var(--gold); font-weight: normal; font-size: 26px; margin: 34px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 18px; font-style: italic; }
+
+  /* item cards */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+  .card {
+    display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px; transition: transform .15s, border-color .15s;
+  }
+  .card:hover { transform: translateY(-3px); border-color: var(--gold); }
+  .art { width: 100%; height: 130px; }
+  .card h3 { font-size: 17px; margin: 8px 0 4px; font-weight: normal; }
+  .card p { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; flex: 1; }
+  .buyrow { display: flex; justify-content: space-between; align-items: center; }
+  .price { color: var(--gold); font-size: 18px; }
+  button {
+    font: inherit; cursor: pointer;
+    padding: 7px 16px; border: none; border-radius: 8px;
+    background: var(--gold); color: #241a08;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .6; cursor: wait; }
+  button.plain { background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+
+  /* drawings: dark display case with a spotlight */
+  .art { background: radial-gradient(ellipse at 50% 40%, #2e2545 0%, #15111f 75%); border-radius: 10px; }
+  .art .t { font-family: monospace; font-weight: bold; }
+  td .mini { background: none; }
+
+  /* my items */
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 12px; overflow: hidden; }
+  th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: normal; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+  td .mini { width: 30px; height: 30px; vertical-align: middle; margin-right: 8px; }
+  .listhead { display: flex; justify-content: space-between; align-items: end; }
+  .empty { color: var(--muted); font-style: italic; }
+  .error { color: var(--red); }
+
+  /* popup message */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(120px);
+    background: var(--panel2); border: 1px solid var(--gold); border-radius: 10px;
+    padding: 12px 20px; transition: transform .3s;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.bad { border-color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">The Leaky Pipeline <small>Sweets &amp; Artifacts</small></div>
+  <div class="who">
+    <label for="user">Your name</label>
+    <input id="user" value="Andreia" maxlength="40">
+  </div>
+  <div class="stats">
+    <div>Items bought<b id="count">0</b></div>
+    <div>Total spent<b id="total">$0</b></div>
+  </div>
+</header>
+
+<main>
+  <h2>Sweets</h2>
+  <p class="sub">Honeydukes, DevOps edition</p>
+  <div class="grid" id="sweets"></div>
+
+  <h2>Artifacts</h2>
+  <p class="sub">From the Ops of Middle-earth</p>
+  <div class="grid" id="artifacts"></div>
+
+  <div class="listhead">
+    <h2>My items</h2>
+    <!-- <button class="plain" onclick="loadItems()">Refresh</button> -->
+    <button class="plain" onclick="refresh(this)">Refresh</button>
+  </div>
+  <p class="sub">Read from MongoDB through the API server</p>
+  <table>
+    <thead><tr><th>Item</th><th>User</th><th>Price</th><th>Time</th></tr></thead>
+    <tbody id="items"></tbody>
+  </table>
+</main>
+
+<div id="toast"></div>
+
+<!-- shared light, metal and glow effects used by all the drawings -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <radialGradient id="shade" cx=".35" cy=".3" r=".8">
+      <stop offset="0" stop-color="#fff" stop-opacity=".55"/>
+      <stop offset=".25" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset=".6" stop-color="#000" stop-opacity=".1"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".6"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3c4"/><stop offset=".25" stop-color="#e8b64c"/>
+      <stop offset=".5" stop-color="#8a5a12"/><stop offset=".72" stop-color="#f6d27a"/>
+      <stop offset="1" stop-color="#7a4c0c"/>
+    </linearGradient>
+    <linearGradient id="silver" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset=".3" stop-color="#b8c2cc"/>
+      <stop offset=".5" stop-color="#5d6875"/><stop offset=".72" stop-color="#e6ecf2"/>
+      <stop offset="1" stop-color="#6b7683"/>
+    </linearGradient>
+    <linearGradient id="foil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e0c4ff"/><stop offset=".35" stop-color="#5b2a99"/>
+      <stop offset=".6" stop-color="#c79bff"/><stop offset="1" stop-color="#3d1a6b"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe3f1"/><stop offset="1" stop-color="#ff5fa8"/>
+    </linearGradient>
+    <linearGradient id="cloth" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#16301e"/><stop offset=".25" stop-color="#3d7a4f"/>
+      <stop offset=".45" stop-color="#1c3a25"/><stop offset=".65" stop-color="#3a724a"/>
+      <stop offset="1" stop-color="#132a1a"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7ccf6a"/><stop offset="1" stop-color="#245e2a"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".75"/>
+      <stop offset=".5" stop-color="#cfe8ff" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".6"/>
+    </linearGradient>
+    <radialGradient id="orb" cx=".5" cy=".55" r=".55">
+      <stop offset="0" stop-color="#2b1d3f"/><stop offset=".75" stop-color="#120d1c"/>
+      <stop offset="1" stop-color="#05030a"/>
+    </radialGradient>
+    <pattern id="mail" width="4" height="4" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.6" fill="none" stroke="#e6ecf2" stroke-width=".7"/>
+    </pattern>
+    <path id="ringpath" d="M22 56 a28 16 0 1 1 56 0 a28 16 0 1 1 -56 0"/>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="blur1"><feGaussianBlur stdDeviation=".8"/></filter>
+    <filter id="blur2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2"/></filter>
+    <filter id="blur6" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#000" flood-opacity=".6"/>
+    </filter>
+  </defs>
+</svg>
+<script>
+// every drawing is lit the same way: spotlight behind, soft shadow under, shine on top
+function art(tint, inside) {
+  return `<svg class="art" viewBox="0 0 100 100" aria-hidden="true">
+    <ellipse cx="50" cy="48" rx="40" ry="38" fill="${tint}" opacity=".35" filter="url(#blur6)"/>
+    <ellipse cx="50" cy="89" rx="28" ry="4.5" fill="#000" opacity=".6" filter="url(#blur2)"/>
+    ${inside}</svg>`;
+}
+// a shape in a colour, plus the shared light-and-shadow layer on top
+function sh(shape, color) {
+  return shape.replace("/>", ` fill="${color}"/>`) + shape.replace("/>", ` fill="url(#shade)"/>`);
+}
+// a small shine spot
+const hl = (x, y, rx, ry, rot = 0) =>
+  `<ellipse cx="${x}" cy="${y}" rx="${rx}" ry="${ry}" fill="#fff" opacity=".75" filter="url(#blur1)" transform="rotate(${rot} ${x} ${y})"/>`;
+
+function bean(x, y, rot, color) {
+  return `<g transform="translate(${x} ${y}) rotate(${rot})">
+    ${sh('<path d="M-9 -2 C-9 -8 -1 -9 2 -6 C4 -4 6 -7 9 -4 C12 0 8 7 0 7 C-6 7 -9 3 -9 -2 Z"/>', color)}
+    <ellipse cx="-3" cy="-3.5" rx="3" ry="1.2" fill="#fff" opacity=".7"/></g>`;
+}
+function cluster(x, y) {
+  const c = "#4e2c14";
+  return [[x, y, 9], [x - 7, y + 3, 7], [x + 7, y + 4, 7], [x - 2, y - 7, 6], [x + 5, y - 5, 5]]
+    .map(([cx, cy, r]) => sh(`<circle cx="${cx}" cy="${cy}" r="${r}"/>`, c)).join("") + hl(x - 4, y - 8, 2.5, 1.2, -20);
+}
+
+const SWEETS = [
+  { name: "Bertie Bott's Every Error Beans", price: 4,
+    joke: "Every flavour of HTTP error: 404 mint, 418 teapot, 502 Bad Gateway earwax.",
+    svg: art("#ff5d5d", `
+      <text x="50" y="26" font-size="8" text-anchor="middle" font-family="monospace" fill="#ff8a8a" filter="url(#glow)">404 · 418 · 502</text>
+      ${bean(30, 74, -10, "#c92a2a")}${bean(48, 79, 15, "#e9b32e")}${bean(67, 74, -25, "#3fae62")}
+      ${bean(26, 60, -40, "#e8731f")}${bean(39, 62, 30, "#7340c2")}${bean(57, 62, -5, "#e45c98")}
+      ${bean(73, 59, 40, "#2f86d6")}${bean(48, 48, 10, "#d8cfb8")}
+      <circle cx="45" cy="47" r=".8" fill="#6b5a3a"/><circle cx="50" cy="49" r=".7" fill="#6b5a3a"/><circle cx="52" cy="46" r=".6" fill="#6b5a3a"/>`) },
+
+  { name: "Chocolate Rollback Frogs", price: 6,
+    joke: "Hops you back to the last working version. Collect all the incident cards!",
+    svg: art("#c98a4a", `
+      <g transform="rotate(-12 65 40)" filter="url(#drop)">
+        <rect x="51" y="16" width="30" height="42" rx="2" fill="url(#gold)"/>
+        <rect x="54" y="19" width="24" height="36" rx="1" fill="#24180c"/>
+        <text x="66" y="31" font-size="5" fill="#f6d27a" text-anchor="middle" font-family="monospace">INCIDENT</text>
+        <text x="66" y="40" font-size="6" fill="#f6d27a" text-anchor="middle" font-family="monospace">#0042</text>
+        <text x="66" y="49" font-size="5" fill="#ff8a8a" text-anchor="middle" font-family="monospace">SEV-1</text>
+      </g>
+      <g filter="url(#drop)">
+        ${sh('<ellipse cx="24" cy="78" rx="11" ry="6"/>', "#5a3317")}
+        ${sh('<ellipse cx="66" cy="78" rx="11" ry="6"/>', "#5a3317")}
+        ${sh('<path d="M24 80 C20 64 30 54 45 54 C60 54 70 64 66 80 C58 86 32 86 24 80 Z"/>', "#5a3317")}
+        ${sh('<circle cx="35" cy="55" r="7"/>', "#5a3317")}
+        ${sh('<circle cx="55" cy="55" r="7"/>', "#5a3317")}
+        ${sh('<ellipse cx="36" cy="84" rx="5" ry="3"/>', "#4a2a12")}
+        ${sh('<ellipse cx="54" cy="84" rx="5" ry="3"/>', "#4a2a12")}
+        <path d="M36 70 Q45 75 54 70" stroke="#2a1608" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+        <path d="M30 62 Q45 58 60 62" stroke="#fff" stroke-width="1.5" fill="none" opacity=".25" filter="url(#blur1)"/>
+        ${hl(33, 52, 2, 1.2, -20)}${hl(53, 52, 2, 1.2, -20)}
+      </g>`) },
+
+  { name: "Acid Pops", price: 3,
+    joke: "Fully ACID: Atomic, Consistent, Isolated, Durable. MongoDB approved.",
+    svg: art("#5cff7a", `
+      ${sh('<rect x="48" y="58" width="4" height="30" rx="1.5"/>', "#efe6d2")}
+      <circle cx="50" cy="40" r="25" fill="#7dff9a" opacity=".35" filter="url(#blur6)"/>
+      <circle cx="50" cy="40" r="22" fill="#2fa84f"/>
+      <path d="M50 40 m0 -4 a4 4 0 1 1 -4 4 a8 8 0 1 1 8 8 a12 12 0 1 1 -12 -12 a16 16 0 0 1 16 -2"
+            fill="none" stroke="#d9ffb0" stroke-width="3.5" opacity=".7" stroke-linecap="round"/>
+      <circle cx="50" cy="40" r="22" fill="url(#shade)"/>
+      ${hl(41, 29, 7, 3, -35)}
+      <circle cx="76" cy="26" r="1.5" fill="#c8ffd4" filter="url(#glow)"/>
+      <circle cx="24" cy="30" r="1.2" fill="#c8ffd4" filter="url(#glow)"/>
+      <circle cx="72" cy="58" r="1" fill="#c8ffd4" filter="url(#glow)"/>`) },
+
+  { name: "Cockroach Clusters", price: 5,
+    joke: "Survive any node failure. Taste the same in every region.",
+    svg: art("#59d0ff", `
+      <path d="M50 38 L30 68 L70 68 Z" fill="none" stroke="#59d0ff" stroke-width="1.5" filter="url(#glow)" opacity=".9"/>
+      <g filter="url(#drop)">${cluster(50, 38)}${cluster(30, 68)}${cluster(70, 68)}</g>
+      <g transform="translate(51 27) rotate(-15)">
+        <path d="M-4 -1 l-3 -3 M-4 1 l-4 1 M-3 3 l-3 3 M4 -1 l3 -3 M4 1 l4 1 M3 3 l3 3 M-1 -4 l-3 -5 M1 -4 l3 -5"
+              stroke="#1a0e05" stroke-width=".8" fill="none"/>
+        ${sh('<ellipse cx="0" cy="0" rx="4.5" ry="5.5"/>', "#3a1e0a")}
+        <path d="M0 -4 V5" stroke="#1a0e05" stroke-width=".6"/>
+        ${hl(-1.5, -1.5, 1.2, 2)}
+      </g>`) },
+
+  { name: "Fizzing Webhookbees", price: 4,
+    joke: "Make you float every time someone pushes to main.",
+    svg: art("#ffc93c", `
+      <path d="M50 37 V24 a6 6 0 1 1 6 -6" fill="none" stroke="url(#silver)" stroke-width="2.5" stroke-linecap="round"/>
+      <ellipse cx="37" cy="40" rx="13" ry="7" fill="#dff3ff" opacity=".4" stroke="#fff" stroke-width=".5" transform="rotate(-30 37 40)"/>
+      <ellipse cx="63" cy="40" rx="13" ry="7" fill="#dff3ff" opacity=".4" stroke="#fff" stroke-width=".5" transform="rotate(30 63 40)"/>
+      <g filter="url(#drop)">
+        <circle cx="50" cy="56" r="19" fill="#e8a317"/>
+        <path d="M33 50 Q50 45 67 50" stroke="#3a2205" stroke-width="5" fill="none" opacity=".6"/>
+        <path d="M32 61 Q50 56 68 61" stroke="#3a2205" stroke-width="5" fill="none" opacity=".6"/>
+        <circle cx="50" cy="56" r="19" fill="url(#shade)"/>
+      </g>
+      ${hl(43, 45, 6, 2.5, -25)}
+      <circle cx="74" cy="66" r="1.6" fill="#fff8d0" filter="url(#glow)"/><circle cx="79" cy="54" r="1.1" fill="#fff8d0" filter="url(#glow)"/>
+      <circle cx="24" cy="62" r="1.3" fill="#fff8d0" filter="url(#glow)"/><circle cx="21" cy="48" r="1" fill="#fff8d0" filter="url(#glow)"/>
+      <circle cx="70" cy="76" r="1" fill="#fff8d0" filter="url(#glow)"/>`) },
+
+  { name: "Sugar YAML Quills", price: 2,
+    joke: "Write anything, but the indentation is always wrong.",
+    svg: art("#ff7ac0", `
+      <path d="M74 12 C88 36 66 58 46 70 C42 50 52 26 74 12 Z" fill="url(#pink)" opacity=".9" filter="url(#drop)"/>
+      <path d="M70 22 l8 2 M66 30 l10 3 M62 38 l10 4 M57 46 l9 5 M68 20 l-6 4 M63 28 l-8 6 M58 37 l-8 7"
+            stroke="#fff" stroke-width=".6" opacity=".45"/>
+      <path d="M73 15 C64 38 54 56 44 72" stroke="#fff0f7" stroke-width="1.6" fill="none"/>
+      <path d="M44 72 L37 85" stroke="url(#gold)" stroke-width="2.5" stroke-linecap="round"/>
+      ${hl(64, 30, 4, 1.5, -55)}
+      <g font-family="monospace" font-size="8">
+        <text x="12" y="44" fill="#ffe1f0" filter="url(#glow)">key:</text>
+        <text x="18" y="56" fill="#ffe1f0" filter="url(#glow)">- a</text>
+        <text x="13" y="68" fill="#ff6b6b" filter="url(#glow)">- b</text>
+      </g>`) },
+
+  { name: "Ton-Tongue Terraform Toffee", price: 5,
+    joke: "Your state file grows ten feet long.",
+    svg: art("#b07cff", `
+      <path d="M48 62 C46 72 54 78 51 90" stroke="#b56d1c" stroke-width="4" fill="none" stroke-linecap="round"/>
+      <path d="M47 64 C46 72 52 76 50 86" stroke="#f0b860" stroke-width="1" fill="none" opacity=".6"/>
+      <g filter="url(#drop)">
+        <path d="M29 42 L12 31 L16 50 L12 69 L29 58 Z" fill="url(#foil)"/>
+        <path d="M71 42 L88 31 L84 50 L88 69 L71 58 Z" fill="url(#foil)"/>
+        ${sh('<rect x="26" y="36" width="48" height="28" rx="10"/>', "#c07a22")}
+      </g>
+      <text x="50.6" y="55.6" font-size="13" text-anchor="middle" font-family="Georgia, serif" font-weight="bold" fill="#f0b860" opacity=".5">TF</text>
+      <text x="50" y="55" font-size="13" text-anchor="middle" font-family="Georgia, serif" font-weight="bold" fill="#6e3d0c" opacity=".75">TF</text>
+      ${hl(40, 40, 9, 1.5)}`) },
+
+  { name: "Kafka Cauldron Cakes", price: 7,
+    joke: "Every bite consumed exactly once. Probably.",
+    svg: art("#4dff88", `
+      <rect x="14" y="14" width="8" height="8" rx="1.5" fill="#7cc4ff" filter="url(#glow)" opacity=".5" transform="rotate(-15 18 18)"/>
+      <rect x="28" y="22" width="8" height="8" rx="1.5" fill="#7cc4ff" filter="url(#glow)" opacity=".75" transform="rotate(10 32 26)"/>
+      <rect x="40" y="31" width="8" height="8" rx="1.5" fill="#a8d8ff" filter="url(#glow)" transform="rotate(-8 44 35)"/>
+      <ellipse cx="50" cy="44" rx="26" ry="10" fill="#4dff88" opacity=".5" filter="url(#blur6)"/>
+      <g filter="url(#drop)">
+        <path d="M31 82 l-4 7 M69 82 l4 7" stroke="#1d1d24" stroke-width="3" stroke-linecap="round"/>
+        ${sh('<path d="M22 48 C20 72 34 84 50 84 C66 84 80 72 78 48 Z"/>', "#2c2c36")}
+        <ellipse cx="50" cy="48" rx="29" ry="6" fill="#1d1d24" stroke="#6a6a78" stroke-width="1.2"/>
+        <ellipse cx="50" cy="48" rx="25" ry="4.5" fill="#46e87e" filter="url(#glow)"/>
+      </g>
+      <circle cx="43" cy="47" r="2.2" fill="#c8ffd8"/><circle cx="57" cy="49" r="1.5" fill="#c8ffd8"/><circle cx="51" cy="46" r="1" fill="#c8ffd8"/>
+      <path d="M30 58 Q34 72 46 78" stroke="#fff" stroke-width="1.5" fill="none" opacity=".2" filter="url(#blur1)"/>`) },
+
+  { name: "Exploding Bonbons", price: 6,
+    joke: "Chaos engineering approved. Eat in prod only.",
+    svg: art("#ff6a3c", `
+      <circle cx="82" cy="14" r="6" fill="#8a8a96" opacity=".3" filter="url(#blur2)"/>
+      <circle cx="88" cy="7" r="4" fill="#8a8a96" opacity=".2" filter="url(#blur2)"/>
+      <path d="M58 40 Q65 30 72 26" stroke="#6b5030" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <g filter="url(#drop)">${sh('<circle cx="45" cy="60" r="23"/>', "#b8121a")}</g>
+      ${hl(36, 49, 8, 4, -35)}
+      <circle cx="74" cy="24" r="7" fill="#ffb03c" opacity=".6" filter="url(#blur2)"/>
+      <path d="M74 15 L76 22 L83 21 L77 25 L82 31 L75 28 L73 34 L72 27 L65 28 L70 24 L66 18 L72 21 Z" fill="#fff1b0" filter="url(#glow)"/>
+      <circle cx="84" cy="30" r="1" fill="#ffd36b" filter="url(#glow)"/><circle cx="64" cy="16" r="1" fill="#ffd36b" filter="url(#glow)"/>`) },
+];
+
+const ARTIFACTS = [
+  { name: "The One Root Token", price: 9999,
+    joke: "One token to rule them all. Never, ever commit it to git.",
+    svg: art("#ff8a2e", `
+      <ellipse cx="50" cy="56" rx="34" ry="22" fill="#ff9a3c" opacity=".3" filter="url(#blur6)"/>
+      <g filter="url(#drop)">
+        <ellipse cx="50" cy="56" rx="28" ry="16" fill="none" stroke="url(#gold)" stroke-width="8"/>
+        <ellipse cx="50" cy="56" rx="24" ry="12.3" fill="none" stroke="#5a3a08" stroke-width="1" opacity=".7"/>
+      </g>
+      <text font-size="4.2" font-family="Georgia, serif" fill="#ff6a1a" filter="url(#glow)" dominant-baseline="middle">
+        <textPath href="#ringpath" textLength="136" lengthAdjust="spacing">root token · never commit · root token · never commit ·</textPath></text>
+      <path d="M27 50 Q50 37 73 50" stroke="#fff" stroke-width="1.5" fill="none" opacity=".7" filter="url(#blur1)"/>`) },
+
+  { name: "Sting", price: 450,
+    joke: "Glows blue when prod is down.",
+    svg: art("#6fb6ff", `
+      <path d="M40 68 L76 18" stroke="#6fb6ff" stroke-width="14" stroke-linecap="round" opacity=".55" filter="url(#blur6)"/>
+      <g filter="url(#drop)">
+        <path d="M37.5 65.5 L76 18 L42.5 70.5 Z" fill="url(#silver)"/>
+        <path d="M40 68 L70 27" stroke="#7a8796" stroke-width=".8"/>
+        <path d="M39 66 L75 20" stroke="#fff" stroke-width=".6" opacity=".9"/>
+        <path d="M31 61 Q38 70 49 75" stroke="url(#gold)" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <path d="M40 68 L31 80" stroke="#3b2414" stroke-width="6" stroke-linecap="round"/>
+        <path d="M35 73 l3 2 M33.5 75.5 l3 2 M32 78 l3 2" stroke="#6b4a2a" stroke-width=".8"/>
+        ${sh('<circle cx="30" cy="82" r="3.2"/>', "#d9a640")}
+      </g>`) },
+
+  { name: "Mithril TLS Vest", price: 800,
+    joke: "Light as a feather, stops every man-in-the-middle arrow.",
+    svg: art("#bcd6ff", `
+      <g filter="url(#drop)">
+        <path d="M34 18 L42 26 Q50 32 58 26 L66 18 L78 28 L72 40 L72 84 L28 84 L28 40 L22 28 Z" fill="url(#silver)"/>
+        <path d="M34 18 L42 26 Q50 32 58 26 L66 18 L78 28 L72 40 L72 84 L28 84 L28 40 L22 28 Z" fill="url(#mail)" opacity=".8"/>
+        <path d="M34 18 L42 26 Q50 32 58 26 L66 18 L78 28 L72 40 L72 84 L28 84 L28 40 L22 28 Z" fill="url(#shade)" opacity=".7"/>
+      </g>
+      <rect x="41" y="52" width="18" height="15" rx="2" fill="#ffd36b" opacity=".6" filter="url(#blur2)"/>
+      <path d="M45 52 v-5 a5 5 0 0 1 10 0 v5" fill="none" stroke="url(#silver)" stroke-width="2"/>
+      <rect x="41" y="52" width="18" height="15" rx="2" fill="url(#gold)"/>
+      <circle cx="50" cy="58" r="1.8" fill="#3a2508"/><rect x="49.3" y="58" width="1.4" height="5" fill="#3a2508"/>
+      <path d="M64 36 l1 3 l3 1 l-3 1 l-1 3 l-1 -3 l-3 -1 l3 -1 Z" fill="#fff" filter="url(#glow)"/>`) },
+
+  { name: "Palantír Dashboard", price: 1200,
+    joke: "See every cluster in Middle-earth. Careful, Sauron watches back.",
+    svg: art("#ff7a2e", `
+      <g filter="url(#drop)">
+        ${sh('<path d="M33 87 L40 70 L60 70 L67 87 Z"/>', "#3b2a1c")}
+        <rect x="38" y="70" width="24" height="3" fill="url(#gold)"/>
+        <circle cx="50" cy="44" r="26" fill="url(#orb)"/>
+      </g>
+      <ellipse cx="44" cy="50" rx="14" ry="8" fill="#7a3cff" opacity=".35" filter="url(#blur6)"/>
+      <ellipse cx="58" cy="36" rx="10" ry="6" fill="#ff7a2e" opacity=".3" filter="url(#blur6)"/>
+      <g filter="url(#glow)">
+        <rect x="37" y="48" width="5" height="12" fill="#5cc98a"/>
+        <rect x="45" y="40" width="5" height="20" fill="#7cc4ff"/>
+        <rect x="53" y="44" width="5" height="16" fill="#e8b64c"/>
+      </g>
+      <ellipse cx="50" cy="31" rx="7" ry="3" fill="#ff8a2e" filter="url(#glow)"/>
+      <ellipse cx="50" cy="31" rx="1.2" ry="3" fill="#120700"/>
+      <circle cx="50" cy="44" r="26" fill="none" stroke="#fff" stroke-width=".6" opacity=".25"/>
+      ${hl(40, 28, 8, 4, -35)}`) },
+
+  { name: "Phial of Galadriel", price: 300,
+    joke: "A light in dark places, when all other logs go out.",
+    svg: art("#cfe8ff", `
+      <circle cx="50" cy="60" r="34" fill="#cfe8ff" opacity=".35" filter="url(#blur6)"/>
+      <g stroke="#e6f3ff" stroke-width="1.2" opacity=".55" filter="url(#glow)" stroke-linecap="round">
+        <path d="M50 10 v10 M18 60 h-10 M82 60 h10 M26 34 l-7 -7 M74 34 l7 -7 M26 86 l-6 6 M74 86 l6 6"/>
+      </g>
+      <rect x="44.5" y="24" width="11" height="8" rx="1.5" fill="url(#silver)"/>
+      <path d="M45 32 L45 44 Q32 52 34 66 Q38 82 50 82 Q62 82 66 66 Q68 52 55 44 L55 32 Z" fill="url(#glass)" stroke="#fff" stroke-width=".6" stroke-opacity=".6"/>
+      <circle cx="50" cy="64" r="11" fill="#fff" filter="url(#blur6)"/>
+      <circle cx="50" cy="64" r="5" fill="#fff"/>
+      <path d="M40 54 Q37 64 41 74" stroke="#fff" stroke-width="1.5" fill="none" opacity=".8" filter="url(#blur1)"/>`) },
+
+  { name: "Elven Cloak of NAT", price: 250,
+    joke: "Hides your private IPs from the whole internet.",
+    svg: art("#5cc98a", `
+      <g filter="url(#drop)">
+        <path d="M50 14 Q33 16 33 36 L20 86 Q50 80 80 86 L67 36 Q67 16 50 14 Z" fill="url(#cloth)"/>
+        <path d="M50 14 Q33 16 33 36 L20 86 Q50 80 80 86 L67 36 Q67 16 50 14 Z" fill="url(#shade)" opacity=".6"/>
+      </g>
+      <path d="M40 46 Q36 66 30 84 M50 50 Q50 68 50 82 M60 46 Q64 66 70 84" stroke="#0b1d10" stroke-width="2" fill="none" opacity=".5" filter="url(#blur1)"/>
+      <path d="M40 34 Q50 46 60 34 Q50 24 40 34 Z" fill="#081109"/>
+      <path d="M50 42 Q58 48 50 58 Q42 48 50 42 Z" fill="url(#silver)" filter="url(#drop)"/>
+      <circle cx="50" cy="50" r="2.4" fill="#5cff9a" filter="url(#glow)"/>
+      <text x="50" y="74" font-size="5.5" text-anchor="middle" font-family="monospace" fill="#b8f5cf" opacity=".45">10.0.0.0/8</text>`) },
+
+  { name: "Lembas Bread", price: 15,
+    joke: "One bite keeps a pod alive all day. Liveness probe in a leaf.",
+    svg: art("#f0d9a0", `
+      <g filter="url(#drop)">
+        <path d="M14 60 Q46 16 86 42 Q56 94 14 60 Z" fill="url(#leaf)"/>
+        <path d="M14 60 Q50 54 86 42" stroke="#bff0a0" stroke-width="1" fill="none" opacity=".5"/>
+        <g transform="rotate(-8 50 52)">
+          ${sh('<rect x="31" y="37" width="38" height="30" rx="3"/>', "#e8cf98")}
+          <rect x="31" y="37" width="38" height="30" rx="3" fill="none" stroke="#b58a46" stroke-width="1.5"/>
+          <path d="M31 52 h38 M50 37 v30" stroke="#c9a25e" stroke-width=".8" opacity=".6"/>
+          <path d="M34 47 h6 l3 -6 l4 11 l3 -5 h14" stroke="#9c6c2c" stroke-width="1.3" fill="none" stroke-linejoin="round"/>
+          ${hl(40, 40, 6, 1.2)}
+        </g>
+      </g>`) },
+
+  { name: "Horn of Gondor", price: 120,
+    joke: "Blow it to page the on-call. Help will come... eventually.",
+    svg: art("#e8b64c", `
+      <g filter="url(#drop)">
+        ${sh('<path d="M16 36 Q38 72 70 52 L77 66 Q34 92 12 42 Z"/>', "#e9dcc0")}
+        <path d="M27.6 50.5 Q24 56 24.3 62.2 M40.5 58 Q38 66 39.3 73 M54.6 58.5 Q55 66 56.8 74.2"
+              stroke="url(#silver)" stroke-width="3" fill="none"/>
+        <ellipse cx="73.5" cy="59" rx="5" ry="8" fill="#241608" stroke="url(#gold)" stroke-width="2" transform="rotate(-25 73.5 59)"/>
+        ${sh('<circle cx="14" cy="39" r="2.5"/>', "#b8c2cc")}
+      </g>
+      <path d="M22 44 Q40 66 66 54" stroke="#fff" stroke-width="1.3" fill="none" opacity=".5" filter="url(#blur1)"/>
+      <g stroke="#ffd36b" stroke-width="1.8" fill="none" stroke-linecap="round" filter="url(#glow)">
+        <path d="M83 48 q6 8 2 18" opacity=".9"/><path d="M89 42 q9 14 2 28" opacity=".55"/>
+      </g>`) },
+];
+// find the drawing for an item name (used in the "My items" table too)
+const ALL = [...SWEETS, ...ARTIFACTS];
+function drawingFor(name) {
+  const found = ALL.find(i => i.name === name);
+  return found ? found.svg : art("#2b2240", `<text class="t" x="50" y="60" font-size="28" text-anchor="middle" fill="#b3a8c4">?</text>`);
+}
+
+const money = n => "$" + Number(n).toLocaleString("en-US");
+
+// build the cards (our own fixed content, names go in with textContent)
+function makeCards(list, boxId) {
+  const box = document.getElementById(boxId);
+  for (const item of list) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = item.svg;   // the drawing (fixed, written above)
+
+    const h = document.createElement("h3"); h.textContent = item.name;
+    const p = document.createElement("p"); p.textContent = item.joke;
+
+    const row = document.createElement("div"); row.className = "buyrow";
+    const price = document.createElement("span"); price.className = "price"; price.textContent = money(item.price);
+    const btn = document.createElement("button"); btn.textContent = "Buy";
+    btn.onclick = () => buy(item, btn);
+    row.append(price, btn);
+
+    card.append(h, p, row);
+    box.append(card);
+  }
+}
+
+let toastTimer;
+function toast(text, bad) {
+  const t = document.getElementById("toast");
+  t.textContent = text;
+  t.className = "show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = "", 2500);
+}
+
+// send the buy to the client server -> Kafka
+async function buy(item, btn) {
+  const user = document.getElementById("user").value.trim() || "anonymous";
+  btn.disabled = true; btn.textContent = "Sending...";
+  try {
+    const res = await fetch("/buy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user, item: item.name, price: item.price }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    toast("Bought " + item.name);
+    setTimeout(loadItems, 1000);   // give the API server a second to save it
+  } catch (e) {
+    toast("Could not send the order (" + e.message + ")", true);
+  } finally {
+    btn.disabled = false; btn.textContent = "Buy";
+  }
+}
+
+// ask for all bought items and fill the table
+async function loadItems() {
+  const body = document.getElementById("items");
+  try {
+    const res = await fetch("/getAllBoughtItems");
+    if (!res.ok) throw new Error(res.status);
+    const list = await res.json();
+    list.sort((a, b) => String(b.time || "").localeCompare(String(a.time || "")));   // newest first
+
+    body.replaceChildren();
+    let total = 0;
+    for (const p of list) {
+      total += Number(p.price) || 0;
+      const tr = document.createElement("tr");
+
+      const itemCell = document.createElement("td");
+      const icon = document.createElement("span");
+      icon.innerHTML = drawingFor(p.item);              // only our own fixed drawings
+      icon.firstChild.setAttribute("class", "art mini");
+      const name = document.createElement("span"); name.textContent = p.item;
+      itemCell.append(icon, name);
+
+      const userCell = document.createElement("td"); userCell.textContent = p.user;
+      const priceCell = document.createElement("td"); priceCell.textContent = money(p.price);
+      const timeCell = document.createElement("td");
+      timeCell.textContent = p.time ? new Date(p.time).toLocaleString() : "-";
+
+      tr.append(itemCell, userCell, priceCell, timeCell);
+      body.append(tr);
+    }
+    if (list.length === 0) {
+      body.innerHTML = '<tr><td colspan="4" class="empty">Nothing bought yet</td></tr>';
+    }
+    document.getElementById("count").textContent = list.length;
+    document.getElementById("total").textContent = money(total);
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="4" class="error">Could not load the list - is the API server up?</td></tr>';
+  }
+}
+
+// Refresh button: show that something happened, even when the list didn't change
+async function refresh(btn) {
+  btn.disabled = true; btn.textContent = "Refreshing...";
+  await loadItems();
+  btn.disabled = false; btn.textContent = "Refresh";
+  toast("List updated - " + document.getElementById("count").textContent + " items");
+}
+
+makeCards(SWEETS, "sweets");
+makeCards(ARTIFACTS, "artifacts");
+loadItems();
+</script>
+</body>
+</html>
