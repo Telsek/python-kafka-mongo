@@ -54,9 +54,11 @@ Terraform builds the VPC, an ALB with HTTPS, the DNS record, ECR (and builds/pus
 
 ## Testing
 
-Stopped the API server, bought something, started it again. The buy waited in Kafka and got saved once the API was back (Horn of Gondor in the logs screenshot).
+Locally: stopped the API server, bought something, started it again. The buy waited in Kafka and got saved once the API was back (Horn of Gondor).
 
-On AWS I did a full destroy + apply, bought an item right after and it showed up straight away. Checked after destroy that nothing was left.
+On AWS: set the api service to 0 tasks, bought 2 items, then set it back to 1. A brand new api container started and saved both straight away (Mithril TLS Vest and Palantír Dashboard in the logs screenshot).
+
+Also did a full destroy + apply, bought an item right after and it showed up straight away. Checked after destroy that nothing was left.
 
 ## Screenshots
 
@@ -70,6 +72,9 @@ On AWS I did a full destroy + apply, bought an item right after and it showed up
 | ECS services | ![ecs services](docs/images/06-ecs-services.png) |
 | ECR | ![ecr](docs/images/07-ecr.png) |
 | Terraform apply | ![terraform apply](docs/images/08-terraform-apply.png) |
+| AWS: API down | ![aws api down](docs/images/09-aws-api-down.png) |
+| AWS: API logs after restart | ![aws api logs](docs/images/10-aws-api-logs.png) |
+| AWS: list after restart | ![aws after restart](docs/images/11-aws-after-restart.png) |
 
 ## Burndown
 
@@ -82,10 +87,11 @@ On AWS I did a full destroy + apply, bought an item right after and it showed up
 | 5 | Testing | done |
 | 6 | Terraform on AWS | done |
 | 7 | Destroy/apply test | done |
+| 8 | API down test on AWS | done |
 
 ## Notes
 
-- Kafka in KRaft mode, no ZooKeeper
-- Versions pinned everywhere
-- At first the AWS shop took ~5 min to work after apply. Fixed by starting kafka and mongo before the API
-- For real production: private subnets + NAT, MSK instead of Kafka in a container, DocumentDB for Mongo, images built in CI
+- Kafka runs without ZooKeeper (KRaft mode), so it's one container instead of two
+- Package and image versions are fixed so a rebuild never pulls something new and breaks. Mongo and the Python base image are fixed to the minor version, so they still get patch updates
+- On AWS the shop first took ~5 min to work after apply, because the API started before kafka and mongo. Now Terraform starts those two first and waits
+- For real production I'd use private subnets + NAT, MSK for Kafka, DocumentDB for Mongo, and build the images in CI
