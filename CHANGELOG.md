@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Telsek/python-kafka-mongo/compare/v1.0.0...v1.1.0) (2026-11-27)
+
+
+### Features
+
+* **api:** health check watches the Kafka reader ([#3](https://github.com/Telsek/python-kafka-mongo/issues/3)) ([73a0559](https://github.com/Telsek/python-kafka-mongo/commit/73a055995206692238450d8a61b6dd426010bc93))
+
 ## 1.0.0 (2026-11-27)
 
 
