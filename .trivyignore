@@ -1,0 +1,9 @@
+# Accepted Trivy findings - each one is a deliberate choice, not a mistake
+
+# EKS API reachable from the internet: needed for kubectl from my laptop,
+# locked to my IP only (admin_cidrs). A private-only API would need a VPN.
+AWS-0040
+
+# Nodes can open outbound connections anywhere: they must pull images
+# (GHCR, Docker Hub, Quay) and call AWS APIs. Outbound only, via the NAT.
+AWS-0104
