@@ -47,3 +47,71 @@ resource "aws_eks_pod_identity_association" "vault" {
   service_account = "vault"
   role_arn        = aws_iam_role.vault.arn
 }
+
+# --- bootstrap Job: sets up a fresh Vault, keeps its root token in SSM ---
+
+# placeholders - the Job writes the real values, Terraform deletes them on destroy
+resource "aws_ssm_parameter" "vault_root_token" {
+  name   = "/${var.project}/vault/root-token"
+  type   = "SecureString"
+  key_id = aws_kms_alias.vault.name
+  value  = "set-by-bootstrap-job"
+
+  lifecycle {
+    ignore_changes = [value] # the Job owns the value
+  }
+}
+
+# full init output (root token + recovery key) - needed only for disaster recovery
+resource "aws_ssm_parameter" "vault_init" {
+  name   = "/${var.project}/vault/init"
+  type   = "SecureString"
+  key_id = aws_kms_alias.vault.name
+  value  = "set-by-bootstrap-job"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+resource "aws_iam_role" "vault_bootstrap" {
+  name = "${var.project}-vault-bootstrap"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
+
+# read/write only these 2 parameters, encrypt/decrypt only with the Vault key
+resource "aws_iam_role_policy" "vault_bootstrap" {
+  name = "ssm-vault-params"
+  role = aws_iam_role.vault_bootstrap.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = [aws_ssm_parameter.vault_root_token.arn, aws_ssm_parameter.vault_init.arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Encrypt", "kms:Decrypt"]
+        Resource = aws_kms_key.vault.arn
+      }
+    ]
+  })
+}
+
+resource "aws_eks_pod_identity_association" "vault_bootstrap" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = "vault"
+  service_account = "vault-bootstrap"
+  role_arn        = aws_iam_role.vault_bootstrap.arn
+}
