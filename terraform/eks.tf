@@ -40,6 +40,11 @@ module "eks" {
       min_size     = 4
       max_size     = 5
       desired_size = 4
+
+      # pinned node image (kernel 6.18) - MongoDB 8.0 crashes on kernel 6.19+,
+      # and every daily apply would otherwise pick the newest image
+      use_latest_ami_release_version = false
+      ami_release_version            = "1.36.5-20261119"
     }
   }
 }
