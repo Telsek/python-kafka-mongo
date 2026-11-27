@@ -1,0 +1,34 @@
+# Chaos Mesh: kill one random Kafka broker. Strimzi brings it back, and with
+# 3 brokers + min.insync.replicas 2 the shop keeps taking orders.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-kafka-broker
+  namespace: kafka
+spec:
+  action: pod-kill
+  mode: one # one random broker
+  selector:
+    namespaces: [kafka]
+    labelSelectors:
+      strimzi.io/cluster: shop
+      strimzi.io/broker-role: "true"
+
+---
+# Chaos Mesh: add 100ms network delay to the api pods for 3 minutes.
+# Saving gets slow, the Kafka backlog grows, and KEDA adds api pods (up to 6).
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: slow-api
+  namespace: shop
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces: [shop]
+    labelSelectors:
+      app: api
+  delay:
+    latency: "100ms"
+  duration: "3m"
