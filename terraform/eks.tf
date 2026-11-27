@@ -32,6 +32,7 @@ module "eks" {
   # 4 x 8 GB nodes spread over the 3 private subnets (~24 GB needed + headroom)
   eks_managed_node_groups = {
     main = {
+      name           = "${var.project}-node" # shows as the EC2 Name tag
       instance_types = [var.node_instance_type]
       # min_size       = 3
       # max_size       = 4
