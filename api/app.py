@@ -26,6 +26,7 @@ def consume():
                 bootstrap_servers=KAFKA,
                 group_id="api-server",          # Kafka remembers where this group stopped reading
                 auto_offset_reset="earliest",   # first time: read from the start of the topic
+                enable_auto_commit=False,       # we say "read" ourselves, only after Mongo has it
                 value_deserializer=lambda v: json.loads(v),
             )
             break
@@ -36,6 +37,8 @@ def consume():
     # every buy message -> one document in MongoDB
     for message in consumer:
         purchases.insert_one(message.value)
+        # mark as read only after it's saved - a crash in between means it's read again, not lost
+        consumer.commit()
         print("saved:", message.value, flush=True)
 
 
