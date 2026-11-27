@@ -3,3 +3,5 @@ fastapi==0.165.0
 uvicorn==0.54.0
 pymongo==4.20.1
 kafka-python==3.0.13
+# OpenTelemetry: auto-tracing + OTLP exporter (matching versions come with the distro)
+opentelemetry-distro[otlp]==0.66b1
