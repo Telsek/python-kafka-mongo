@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Trivy from its official image - the trivy-action installer couldn't download any version
+  TRIVY: aquasec/trivy:0.76.2
+
 jobs:
   gitleaks:
     runs-on: ubuntu-24.04
@@ -57,22 +61,31 @@ jobs:
           context: ${{ matrix.app }}
           load: true # keep it on the runner for Trivy, don't push on a PR
           tags: ${{ matrix.app }}:pr
-      - uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          version: v0.76.2 # the action's default Trivy version can't be downloaded
-          image-ref: ${{ matrix.app }}:pr
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true # only fail on problems that have a fix
-          exit-code: "1"
+      # - uses: aquasecurity/trivy-action@v0.36.0
+      #   with:
+      #     version: v0.76.2
+      #     image-ref: ${{ matrix.app }}:pr
+      #     severity: HIGH,CRITICAL
+      #     ignore-unfixed: true
+      #     exit-code: "1"
+      # Trivy reads the image straight from the runner's Docker
+      - name: trivy image scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY image \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 ${{ matrix.app }}:pr
 
   terraform-scan:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          version: v0.76.2
-          scan-type: config
-          scan-ref: terraform
-          severity: HIGH,CRITICAL
-          exit-code: "1"
+      # - uses: aquasecurity/trivy-action@v0.36.0
+      #   with:
+      #     version: v0.76.2
+      #     scan-type: config
+      #     scan-ref: terraform
+      #     severity: HIGH,CRITICAL
+      #     exit-code: "1"
+      - name: trivy terraform scan
+        run: |
+          docker run --rm -v "$PWD:/src" $TRIVY config \
+            --severity HIGH,CRITICAL --exit-code 1 /src/terraform
