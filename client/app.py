@@ -31,6 +31,8 @@ def get_producer():
     if producer is None:
         producer = KafkaProducer(
             bootstrap_servers=KAFKA,
+            # acks=1 (default): only the leader broker confirms
+            acks="all",  # wait until the copies have it too (min 2 brokers on AWS) - a broker dying can't lose the buy
             value_serializer=lambda v: json.dumps(v).encode(),
         )
     return producer

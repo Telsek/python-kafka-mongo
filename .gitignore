@@ -1,0 +1,4 @@
+# local Python test env - never commit
+.venv/
+__pycache__/
+.pytest_cache/

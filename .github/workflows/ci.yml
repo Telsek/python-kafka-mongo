@@ -1,0 +1,85 @@
+# CI pipeline - every pull request to main must pass all jobs before it can merge
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Trivy from its official image - the trivy-action installer couldn't download any version
+  TRIVY: aquasec/trivy:0.76.2
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # whole history, so old commits get scanned too
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  tests:
+    runs-on: ubuntu-24.04 # has Docker - Testcontainers starts real Kafka + Mongo
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13" # same as the images
+      - run: pip install -r tests/requirements.txt
+      - run: pytest -v tests
+
+  codeql:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write # to upload findings to the Security tab
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+
+  images:
+    needs: tests # only build what passed the tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false # one image failing doesn't cancel the other
+      matrix:
+        app: [api, client]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.app }}
+          load: true # keep it on the runner for Trivy, don't push on a PR
+          tags: ${{ matrix.app }}:pr
+      # - uses: aquasecurity/trivy-action@v0.36.0
+      #   with:
+      #     version: v0.76.2
+      #     image-ref: ${{ matrix.app }}:pr
+      #     severity: HIGH,CRITICAL
+      #     ignore-unfixed: true
+      #     exit-code: "1"
+      # Trivy reads the image straight from the runner's Docker
+      - name: trivy image scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $TRIVY image \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 ${{ matrix.app }}:pr
+
+  terraform-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: trivy terraform scan
+        run: |
+          docker run --rm -v "$PWD:/src" $TRIVY config \
+            --severity HIGH,CRITICAL --exit-code 1 \
+            --ignorefile /src/.trivyignore /src/terraform

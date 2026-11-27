@@ -1,6 +1,20 @@
 FROM python:3.13-slim
 WORKDIR /app
+# pull in Debian security fixes released after the base image was built
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# RUN pip install --no-cache-dir -r requirements.txt
+# installs the tracers for the libraries found (fastapi, kafka, pymongo)
+# RUN opentelemetry-bootstrap -a install
+# install, then remove pip itself - not needed to run the app, and its bundled old libraries fail Trivy
+RUN pip install --no-cache-dir -r requirements.txt \
+ && opentelemetry-bootstrap -a install \
+ && pip uninstall -y pip
 COPY app.py .
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# exporting off by default (local compose) - the Helm chart turns it on and points it at SigNoz
+ENV OTEL_SERVICE_NAME=api \
+    OTEL_TRACES_EXPORTER=none \
+    OTEL_METRICS_EXPORTER=none \
+    OTEL_LOGS_EXPORTER=none
+# CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["opentelemetry-instrument", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
