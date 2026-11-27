@@ -11,7 +11,10 @@ resource "helm_release" "argocd" {
     dex = { enabled = false } # no SSO login needed, saves RAM
   })]
 
-  depends_on = [module.eks]
+  # depends_on = [module.eks]
+  # destroy order: ArgoCD (and the apps) go first, while the LB controller + ExternalDNS
+  # are still running to delete the ALB and DNS record the apps created
+  depends_on = [module.eks, helm_release.lb_controller, helm_release.external_dns]
 }
 
 # root app: watches apps/ in the GitOps repo (app of apps)
