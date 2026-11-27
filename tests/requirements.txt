@@ -1,0 +1,5 @@
+# the apps' own packages (api has everything the client has + pymongo)
+-r ../api/requirements.txt
+pytest==9.2.0
+testcontainers[kafka,mongodb]==4.14.2
+httpx==0.28.1 # needed by FastAPI's TestClient
