@@ -60,44 +60,97 @@ flowchart TB
 | Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
 | EKS API | Public, but only reachable from my IP |
 
-Node sizing - memory reserved per node (planning estimate, example layout):
+**Node sizing** - memory requested per node (planning estimate, example layout). Each node has 8 GB.
 
-| Node | Main pods | ~GB of 8 |
-| --- | --- | --- |
-| 1 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 5.4 |
-| 2 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 6.1 |
-| 3 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 6.4 |
-| 4 | SigNoz + ClickHouse ~3 GB, ArgoCD, operators, shop | 6.6 |
+| Node | Main pods | Memory requested | Node usage |
+| --- | --- | --- | --- |
+| 1 | Kafka broker (2 GB), Mongo (1 GB), Vault, small pods | 5.4 GB | 68% |
+| 2 | Kafka broker (2 GB), Mongo (1 GB), Vault, small pods | 6.1 GB | 76% |
+| 3 | Kafka broker (2 GB), Mongo (1 GB), Vault, small pods | 6.4 GB | 80% |
+| 4 | SigNoz + ClickHouse (~3 GB), ArgoCD, operators, shop | 6.6 GB | 83% |
+| **Total** | | **24.5 GB** | **77% of 32 GB** |
 
 Kubernetes decides the exact placement at each build; the only fixed rule is one Kafka / Mongo / Vault per AZ. In practice **CPU** turned out to be the tighter limit: reserved CPU was 62-95% per node (see the MongoDB issue below).
 
 ### Inside the cluster
 
-Each box is a namespace. Terraform installs ArgoCD and the AWS add-ons; ArgoCD installs everything else from the GitOps repo.
+The request path, and how changes get in. Boxes inside "Worker nodes" are namespaces.
 
 ```mermaid
 flowchart LR
-    GIT[(GitOps repo)] --> ARGO["argocd<br/>ArgoCD"]
-    TF[Terraform] --> ARGO & KS
-    subgraph EKS["EKS cluster"]
-        ARGO
-        KS["kube-system<br/>LB controller · ExternalDNS · EBS disks"]
+    USER[Browser] --> ALB[ALB]
+    ME["My laptop<br/>kubectl"] --> APIS
+    GIT[(GitOps repo)] --> ARGO
+    subgraph CP["EKS control plane - run by AWS"]
+        APIS[Kubernetes API server]
+    end
+    subgraph EKS["Worker nodes"]
+        ARGO[argocd]
+        KS["kube-system<br/>LB controller · ExternalDNS · EBS"]
         subgraph SHOP["shop"]
+            ING[Ingress]
             CL[client x2]
             API[api 2-6]
         end
-        K["kafka<br/>Strimzi + 3 brokers"]
-        M["mongodb<br/>operator + 3 members"]
-        V["vault<br/>3 pods + VSO"]
+        K["kafka<br/>3 brokers"]
+        M["mongodb<br/>3 members"]
+        V["vault + VSO"]
         KE[keda]
-        S["signoz<br/>SigNoz · ClickHouse · OTel collectors"]
-        CH[chaos-mesh]
+        S[signoz]
     end
-    ARGO -->|deploys| SHOP & K & M & V & KE & S & CH
+    ARGO -->|applies git changes| APIS
+    KS -.->|creates| ALB
+    ALB --> ING --> CL
     CL -->|buy| K -->|read| API -->|save| M
+    CL -->|list| API
     V -.->|Mongo password| API
     KE -.->|scales| API
+    CL & API -.->|telemetry| S
 ```
+
+- **A buy:** browser -> ALB -> Ingress -> client -> Kafka -> api -> MongoDB.
+- **A change:** git -> ArgoCD -> Kubernetes API server -> pods updated. My laptop reaches the same API server with kubectl (locked to my IP).
+- **The ALB itself** is created by the LB controller from the Ingress - not by Terraform.
+
+The diagram shows namespaces only. What each one holds:
+
+| Namespace | Installed by | Main objects |
+| --- | --- | --- |
+| kube-system | Terraform | Kubernetes' own system namespace. LB controller (turns the Ingress into an ALB), ExternalDNS (DNS record), EBS driver (disks) |
+| argocd | Terraform | ArgoCD + the root app, which points at `apps/` in the GitOps repo |
+| shop | ArgoCD | client + api Deployments and Services, Ingress (-> ALB), KEDA ScaledObject, Vault secret sync |
+| kafka | ArgoCD | Strimzi operator, Kafka cluster (3 brokers, 3 disks), topic `purchases` (6 partitions) |
+| mongodb | ArgoCD | MongoDB operator, replica set (3 members, 3 disks), Vault secret sync |
+| vault | ArgoCD | Vault (3 pods, 3 disks), bootstrap Job (first-time setup, passwords) |
+| vault-secrets-operator | ArgoCD | Copies secrets from Vault into Kubernetes Secrets |
+| keda | ArgoCD | KEDA operator |
+| signoz | ArgoCD | SigNoz, ClickHouse (its database), OTel collectors (one per node) |
+| chaos-mesh | ArgoCD | Chaos Mesh controller + one agent per node |
+
+### Why run it in Kubernetes
+
+**Why not plain EC2 machines?** Kafka, MongoDB and Vault are each a 3-member cluster. On EC2 I'd have to build and babysit that myself:
+
+| Need | On plain EC2 | In the cluster |
+| --- | --- | --- |
+| A member crashes | Write scripts to notice and restart it | Kubernetes restarts it or moves it to another node |
+| Build a 3-member cluster | Install and join each machine by hand (or Ansible) | An operator builds it from a short file |
+| One disk per member | Create, attach and move EBS volumes myself | Each member gets its own disk automatically |
+| Spread over 3 AZs | Place each machine by hand | A spread rule |
+| Ship a change | SSH / Ansible | git push -> ArgoCD |
+| Scale the api | Auto Scaling Group on CPU, minutes | KEDA on Kafka backlog, seconds |
+| Cost | Each service on its own machines | Everything packed onto 4 shared nodes |
+
+**Why not AWS managed services?** The brief: a showcase for a team that pays me to **run** the platform - so I run the parts myself instead of paying AWS more to run them.
+
+| Part | Managed AWS option | Why it runs in the cluster |
+| --- | --- | --- |
+| Kafka | MSK | MSK costs more than the nodes it would replace. Strimzi gives the same 3-broker setup from 2 files |
+| MongoDB | DocumentDB / Atlas | Same cost reason. DocumentDB is also only Mongo-compatible, not real MongoDB |
+| Secrets | Secrets Manager | Vault generates the passwords itself and works the same on any cloud |
+| Monitoring | CloudWatch | SigNoz keeps logs, metrics and traces in one place, with no per-GB cost |
+
+The tradeoff: more for me to run and upgrade. With a real team and budget, MSK and a managed database would be the first things I'd move out.
 
 ### Repos
 
