@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Telsek/python-kafka-mongo/compare/v1.1.0...v1.1.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **terraform:** destroy unlocks ClickHouse until signoz is gone ([#6](https://github.com/Telsek/python-kafka-mongo/issues/6)) ([3167dc3](https://github.com/Telsek/python-kafka-mongo/commit/3167dc3efccfa1875d232d49e65d44587545c715))
+
 ## [1.1.0](https://github.com/Telsek/python-kafka-mongo/compare/v1.0.0...v1.1.0) (2026-11-27)
 
 
