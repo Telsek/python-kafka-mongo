@@ -15,6 +15,7 @@ Live (when the cluster is up): <https://shop.mansuraforecast.online>
 - [Tools and why](#tools-and-why)
 - [Issues and fixes](#issues-and-fixes)
 - [Notes](#notes)
+- [What I'd add for production](#what-id-add-for-production)
 
 ## How it works
 
@@ -54,21 +55,21 @@ flowchart TB
 | | |
 | --- | --- |
 | VPC | 3 AZs. Public subnets (10.0.1-3.0/24) hold only the ALB and the NAT. Nodes and pods live in private subnets (/20 each - every pod gets a VPC IP) |
-| NAT | One for all AZs - saves cost. Tradeoff: if its AZ goes down, nodes lose outbound internet (the shop keeps working) |
+| NAT | One for all AZs - saves cost. Tradeoff: if its AZ goes down, nodes lose outbound internet - running pods keep working, but new images can't be pulled |
 | Nodes | 4 x m7i-flex.large (2 vCPU / 8 GB) - the largest type on the AWS free plan. 32 GB total, ~24 GB used |
 | Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
 | EKS API | Public, but only reachable from my IP |
 
-Node sizing (memory reserved, estimate):
+Node sizing - memory reserved per node (planning estimate, example layout):
 
 | Node | Main pods | ~GB of 8 |
 | --- | --- | --- |
-| 1 | Kafka broker (2), Mongo (1), Vault, small pods | 5.4 |
-| 2 | Kafka broker (2), Mongo (1), Vault, small pods | 6.1 |
-| 3 | Kafka broker (2), Mongo (1), Vault, small pods | 6.4 |
-| 4 | SigNoz + ClickHouse (~3), ArgoCD, operators, shop | 6.6 |
+| 1 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 5.4 |
+| 2 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 6.1 |
+| 3 | Kafka broker 2 GB, Mongo 1 GB, Vault, small pods | 6.4 |
+| 4 | SigNoz + ClickHouse ~3 GB, ArgoCD, operators, shop | 6.6 |
 
-The exact pod placement is decided by Kubernetes at each build; the rule is one Kafka / Mongo / Vault per AZ.
+Kubernetes decides the exact placement at each build; the only fixed rule is one Kafka / Mongo / Vault per AZ. In practice **CPU** turned out to be the tighter limit: reserved CPU was 62-95% per node (see the MongoDB issue below).
 
 ### Repos
 
@@ -141,7 +142,7 @@ k6 sends ~170 buys per second for 3 minutes. Chaos Mesh kills a Kafka broker and
 
 ### 7. A real outage
 
-After a rebuild, one MongoDB member couldn't start (not enough CPU reserved on any node). The api lost its database for about 10 minutes. 4 buys were made during that time.
+After a rebuild, one of the 3 MongoDB members couldn't start (no node had enough CPU left to reserve). Until it was fixed - about 10 minutes - the api couldn't use the database. 4 buys were made during that time.
 
 | | |
 | --- | --- |
@@ -160,16 +161,16 @@ After a rebuild, one MongoDB member couldn't start (not enough CPU reserved on a
 
 ## Running it
 
-Needs `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]`):
+Needs an AWS account, Terraform, kubectl, and `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]`:
 
 ```bash
 cd terraform
 terraform init
-terraform apply -auto-approve   # ~10 min, ArgoCD needs ~5 more
+terraform apply -auto-approve   # ~15 min, then ArgoCD needs ~5 more
 ./destroy.sh                    # ~15 min
 ```
 
-Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist, and they block the VPC from being deleted. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
+Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist: the load balancer blocks the VPC from being deleted, and the disks would be left behind, still costing money. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
 
 Load + chaos test (cluster up):
 
@@ -238,4 +239,11 @@ The main ones (symptom -> cause -> fix):
 - **EKS API is public but locked to my IP** (`admin_cidrs`), so kubectl works from my laptop. Trivy flags it; accepted in `.trivyignore` with the reason.
 - **ArgoCD is not reachable from the internet** - it checks git every 3 minutes instead of using a webhook.
 - **Free plan sizing:** largest allowed node is m7i-flex.large (2 vCPU / 8 GB). 4 nodes, ~24 GB of the 32 GB used.
-- **Daily destroy:** the cluster is destroyed every evening and rebuilt from git when needed.
+- **Daily destroy:** the cluster is destroyed at the end of each day and rebuilt from git when needed.
+
+## What I'd add for production
+
+- Vault TLS inside the cluster, and one NAT per AZ.
+- Alert rules in SigNoz (the outage above was found by hand, not by an alert).
+- An ArgoCD webhook (needs ArgoCD reachable from GitHub), instead of polling every 3 minutes.
+- Reserved CPU checked for every container - including the helpers that operators add.
