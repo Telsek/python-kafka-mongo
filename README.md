@@ -20,7 +20,19 @@ Live (when the cluster is up): <https://shop.mansuraforecast.online>
 
 ## How it works
 
-The AWS network, what runs inside the cluster, and why it's built this way.
+```mermaid
+flowchart LR
+    U[Browser] --> ALB[ALB + HTTPS]
+    ALB --> C[client]
+    C -->|buy| K[(Kafka x3)]
+    K --> A[api, 2-6 pods by KEDA]
+    A --> M[(MongoDB x3)]
+    C -->|list| A
+    V[Vault] -.->|Mongo password via VSO| A
+    A & C -.->|traces, logs, metrics| S[SigNoz]
+```
+
+Below: the AWS network, what runs inside the cluster, and why it's built this way.
 
 ### AWS infrastructure
 
@@ -141,7 +153,7 @@ CHANGELOG.md         written by release-please
 
 ## Running it
 
-Needs AWS CLI, Terraform, kubectl, Docker, and - made once by hand - an S3 state bucket, a Route 53 zone and a wildcard ACM certificate. Put your IP in `terraform/terraform.tfvars`: `admin_cidrs = ["<your IP>/32"]`.
+Needs AWS CLI, Terraform, kubectl, Docker, and - made once by hand - an S3 state bucket, a Route 53 zone and a wildcard ACM certificate for your domain (set `domain` in `variables.tf`). Put your IP in `terraform/terraform.tfvars`: `admin_cidrs = ["<your IP>/32"]`.
 
 ```bash
 cd terraform
@@ -149,9 +161,9 @@ terraform init
 terraform apply -auto-approve      # ~15 min + ~5 for ArgoCD
 aws eks update-kubeconfig --name leaky-pipeline --region us-east-1
 
-# load + chaos test (from the repo root)
-kubectl apply -f chaos/chaos-test.yaml
-docker run --rm -i grafana/k6:2.1.0 run - < tests/load/buy.js
+# load + chaos test
+kubectl apply -f ../chaos/chaos-test.yaml
+docker run --rm -i grafana/k6:2.1.0 run - < ../tests/load/buy.js
 
 ./destroy.sh                       # ~15 min - removes the ALB and disks Kubernetes made, then terraform destroy
 ```
@@ -171,12 +183,12 @@ The first version ran with docker compose. The api was stopped, a buy was made, 
 
 ### 2. One command builds AWS
 
-`terraform apply` creates 86 resources. ArgoCD comes up and deploys all 15 apps from git - nothing installed by hand.
+`terraform apply` creates 86 resources. ArgoCD comes up and deploys the other 14 apps from git - nothing installed by hand.
 
 | | |
 | --- | --- |
 | Terraform apply | ![apply](docs/images/05-terraform-apply.png) |
-| ArgoCD: 15 apps, all healthy | ![argocd apps](docs/images/06-argocd-apps.png) |
+| ArgoCD: all 15 apps (the root app + 14) healthy | ![argocd apps](docs/images/06-argocd-apps.png) |
 
 ### 3. What got deployed
 
