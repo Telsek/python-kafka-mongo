@@ -20,17 +20,7 @@ Live (when the cluster is up): <https://shop.mansuraforecast.online>
 
 ## How it works
 
-```mermaid
-flowchart LR
-    U[Browser] --> ALB[ALB + HTTPS]
-    ALB --> C[client]
-    C -->|buy| K[(Kafka x3)]
-    K --> A[api, 2-6 pods by KEDA]
-    A --> M[(MongoDB x3)]
-    C -->|list| A
-    V[Vault] -.->|Mongo password via VSO| A
-    A & C -.->|traces, logs, metrics| S[SigNoz]
-```
+The AWS network, what runs inside the cluster, and why it's built this way.
 
 ### AWS infrastructure
 
@@ -63,7 +53,10 @@ flowchart TB
 | Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
 | EKS API | Public, but only reachable from my IP (`admin_cidrs`). Trivy flags it; accepted in `.trivyignore` with the reason |
 
-**Node sizing** - memory requested per node (planning estimate, example layout). Each node has 8 GB.
+<details>
+<summary>Node sizing - memory per node</summary>
+
+Memory requested per node (planning estimate, example layout). Each node has 8 GB.
 
 | Node | Main pods | Memory requested | Node usage |
 | --- | --- | --- | --- |
@@ -72,6 +65,8 @@ flowchart TB
 | 3 | Kafka broker (2 GB), Mongo (1 GB), Vault, small pods | 6.4 GB | 80% |
 | 4 | SigNoz + ClickHouse (~3 GB), ArgoCD, operators, shop | 6.6 GB | 83% |
 | **Total** | | **24.5 GB** | **77% of 32 GB** |
+
+</details>
 
 Kubernetes decides the exact placement at each build; the only fixed rule is one Kafka / Mongo / Vault per AZ. In practice **CPU** turned out to be the tighter limit: reserved CPU was 62-95% per node (see the MongoDB issue below).
 
@@ -115,17 +110,21 @@ Terraform installs ArgoCD and the AWS add-ons in `kube-system`. ArgoCD installs 
 
 ### Why run it in Kubernetes
 
-**Why not plain EC2 machines?** Kafka, MongoDB and Vault are each a 3-member cluster. On EC2 I'd have to build and babysit that myself:
+**Why not plain EC2 machines?** On EC2 every part below would need its own machines, install scripts and failover handling:
 
-| Need | On plain EC2 | In the cluster |
+<details>
+<summary>Component by component</summary>
+
+| Component | On plain EC2 I'd have to | In the cluster |
 | --- | --- | --- |
-| A member crashes | Write scripts to notice and restart it | Kubernetes restarts it or moves it to another node |
-| Build a 3-member cluster | Install and join each machine by hand (or Ansible) | An operator builds it from a short file |
-| One disk per member | Create, attach and move EBS volumes myself | Each member gets its own disk automatically |
-| Spread over 3 AZs | Place each machine by hand | A spread rule |
-| Ship a change | SSH / Ansible | git push -> ArgoCD |
-| Scale the api | Auto Scaling Group on CPU, minutes | KEDA on Kafka backlog, seconds |
-| Cost | Each service on its own machines | Everything packed onto 4 shared nodes |
+| Kafka (3 brokers) | Install Kafka on 3 machines, set up the quorum, attach a disk to each, restart a dead broker myself | Strimzi builds all 3 from 2 short files, one per AZ, each with its own disk, and restarts a dead one (tested - see [chapter 6](#6-breaking-it-on-purpose)) |
+| MongoDB (3 members) | Install 3 servers, start the replica set, create the users, rejoin a member after a failure | The operator builds the replica set and the user. The password comes from Vault |
+| Vault (3 pods) | Install 3 servers, join them, set up unlocking | Helm chart: 3 pods, one per AZ, unlock with KMS. A Job does the first-time setup |
+| client + api | An Auto Scaling Group and load balancer target group per service | Deployments + one Ingress. KEDA scales the api on Kafka backlog in seconds |
+| SigNoz + collectors | A monitoring server, plus an agent installed on every machine | Helm chart. One collector per node, automatically |
+| All of it | Ship changes with SSH / Ansible, ~10+ machines | git push -> ArgoCD. Packed onto 4 shared nodes |
+
+</details>
 
 **Why not AWS managed services (MSK, DocumentDB, Secrets Manager, CloudWatch)?** The brief is a showcase for a team that pays me to **run** the platform, so I run the parts myself instead of paying AWS more to run them - each choice is compared in [Tools and why](#tools-and-why). The tradeoff: more for me to run and upgrade. With a real team and budget, MSK and a managed database would be the first things I'd move out.
 
@@ -229,13 +228,13 @@ Every pull request must pass 6 checks. Merging a release builds the images, push
 
 ### 6. Breaking it on purpose
 
-k6 sends ~170 buys per second for 3 minutes. Chaos Mesh kills a Kafka broker and adds 100 ms of network delay to the api.
+Run twice. Each time k6 sends 150-170 buys per second for 3 minutes while Chaos Mesh kills a Kafka broker. The second run also adds 100 ms of network delay to the api, so orders pile up and KEDA has something to scale on.
 
 | | |
 | --- | --- |
-| A broker was killed and came back | ![broker killed](docs/images/16-broker-killed.png) |
-| Orders pile up in Kafka -> KEDA scales the api 2 -> 6 | ![keda](docs/images/17-keda-scaled.png) |
-| 31,355 buys, 0 failed | ![k6](docs/images/18-k6-chaos.png) |
+| First run: a broker was killed and came back | ![broker killed](docs/images/16-broker-killed.png) |
+| Second run: orders pile up in Kafka -> KEDA scales the api 2 -> 6 | ![keda](docs/images/17-keda-scaled.png) |
+| Second run: 31,355 buys, 0 failed | ![k6](docs/images/18-k6-chaos.png) |
 
 ### 7. A real outage
 
@@ -283,6 +282,9 @@ GitHub Actions never touches the cluster - it only writes to git, and ArgoCD pul
 
 How I picked, in order: 1) the standard choice for the job, 2) covers a part of the lifecycle, 3) new to me - my previous project already used Prometheus/Grafana, Jenkins, GitLab CI and External Secrets.
 
+<details>
+<summary>Each tool vs the alternatives (15 areas)</summary>
+
 | Area | Picked | Instead of | Why this one |
 | --- | --- | --- | --- |
 | Infra | Terraform | CloudFormation, CDK, Pulumi | Works on any cloud, and the official AWS VPC/EKS modules do most of the heavy lifting |
@@ -300,6 +302,8 @@ How I picked, in order: 1) the standard choice for the job, 2) covers a part of 
 | Security | Gitleaks, CodeQL, Trivy | TruffleHog, SonarQube, Snyk | All free in GitHub Actions. Trivy alone covers both the images and the Terraform |
 | CI/CD | GitHub Actions | Jenkins, GitLab CI | Code is already on GitHub, no CI server to run. Jenkins and GitLab I'd already used |
 | Release | release-please + GHCR | semantic-release; ECR, Docker Hub | A release PR means a human approves each release - semantic-release releases straight away. GHCR sits next to the code, public images are free, no AWS keys in CI |
+
+</details>
 
 ## Issues and fixes
 
