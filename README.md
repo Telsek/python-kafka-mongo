@@ -1,5 +1,7 @@
 # The Leaky Pipeline - Python, Kafka & MongoDB on EKS
 
+[![ci](https://github.com/Telsek/python-kafka-mongo/actions/workflows/ci.yml/badge.svg)](https://github.com/Telsek/python-kafka-mongo/actions/workflows/ci.yml) [![release](https://github.com/Telsek/python-kafka-mongo/actions/workflows/release.yml/badge.svg)](https://github.com/Telsek/python-kafka-mongo/actions/workflows/release.yml)
+
 A small shop (Harry Potter sweets + LOTR artifacts with DevOps jokes) used to show the full DevOps lifecycle: build, test, release, deploy, scale, break, monitor and tear down - all from git.
 
 You buy something -> the **client** sends it to **Kafka** -> the **api** reads Kafka and saves it in **MongoDB** -> the page shows everything bought. If the api or the database is down, the order waits safely in Kafka and is saved once they're back.
@@ -9,12 +11,11 @@ Live (when the cluster is up): <https://shop.mansuraforecast.online>
 ## Index
 
 - [How it works](#how-it-works)
-- [The story in screenshots](#the-story-in-screenshots)
 - [Running it](#running-it)
+- [The story in screenshots](#the-story-in-screenshots)
 - [CI/CD](#cicd)
 - [Tools and why](#tools-and-why)
 - [Issues and fixes](#issues-and-fixes)
-- [Notes](#notes)
 - [What I'd add for production](#what-id-add-for-production)
 
 ## How it works
@@ -32,6 +33,8 @@ flowchart LR
 ```
 
 ### AWS infrastructure
+
+Which AZ gets the 4th node changes per build - the diagram shows one example.
 
 ```mermaid
 flowchart TB
@@ -55,10 +58,10 @@ flowchart TB
 | | |
 | --- | --- |
 | VPC | 3 AZs. Public subnets (10.0.1-3.0/24) hold only the ALB and the NAT. Nodes and pods live in private subnets (/20 each - every pod gets a VPC IP) |
-| NAT | One for all AZs - saves cost. Tradeoff: if its AZ goes down, nodes lose outbound internet - running pods keep working, but new images can't be pulled |
-| Nodes | 4 x m7i-flex.large (2 vCPU / 8 GB) - the largest type on the AWS free plan. 32 GB total, ~24 GB used |
+| NAT | One for all AZs - saves cost. Tradeoff: if its AZ goes down, nodes lose outbound internet - running pods keep working, but new images can't be pulled and calls to AWS (e.g. Vault unlocking with KMS) fail |
+| Nodes | 4 x m7i-flex.large (2 vCPU / 8 GB) - the largest type on the AWS free plan. 32 GB total, ~24.5 GB requested |
 | Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
-| EKS API | Public, but only reachable from my IP |
+| EKS API | Public, but only reachable from my IP (`admin_cidrs`). Trivy flags it; accepted in `.trivyignore` with the reason |
 
 **Node sizing** - memory requested per node (planning estimate, example layout). Each node has 8 GB.
 
@@ -108,24 +111,7 @@ flowchart LR
     CL & API -.->|telemetry| S
 ```
 
-- **A buy:** browser -> ALB -> Ingress -> client -> Kafka -> api -> MongoDB.
-- **A change:** git -> ArgoCD -> Kubernetes API server -> pods updated. My laptop reaches the same API server with kubectl (locked to my IP).
-- **The ALB itself** is created by the LB controller from the Ingress - not by Terraform.
-
-The diagram shows namespaces only. What each one holds:
-
-| Namespace | Installed by | Main objects |
-| --- | --- | --- |
-| kube-system | Terraform | Kubernetes' own system namespace. LB controller (turns the Ingress into an ALB), ExternalDNS (DNS record), EBS driver (disks) |
-| argocd | Terraform | ArgoCD + the root app, which points at `apps/` in the GitOps repo |
-| shop | ArgoCD | client + api Deployments and Services, Ingress (-> ALB), KEDA ScaledObject, Vault secret sync |
-| kafka | ArgoCD | Strimzi operator, Kafka cluster (3 brokers, 3 disks), topic `purchases` (6 partitions) |
-| mongodb | ArgoCD | MongoDB operator, replica set (3 members, 3 disks), Vault secret sync |
-| vault | ArgoCD | Vault (3 pods, 3 disks), bootstrap Job (first-time setup, passwords) |
-| vault-secrets-operator | ArgoCD | Copies secrets from Vault into Kubernetes Secrets |
-| keda | ArgoCD | KEDA operator |
-| signoz | ArgoCD | SigNoz, ClickHouse (its database), OTel collectors (one per node) |
-| chaos-mesh | ArgoCD | Chaos Mesh controller + one agent per node |
+Terraform installs ArgoCD and the AWS add-ons in `kube-system`. ArgoCD installs everything else from the GitOps repo (plus `vault-secrets-operator` and `chaos-mesh`, left out of the diagram). The ALB is created by the LB controller from the Ingress - not by Terraform.
 
 ### Why run it in Kubernetes
 
@@ -141,27 +127,57 @@ The diagram shows namespaces only. What each one holds:
 | Scale the api | Auto Scaling Group on CPU, minutes | KEDA on Kafka backlog, seconds |
 | Cost | Each service on its own machines | Everything packed onto 4 shared nodes |
 
-**Why not AWS managed services?** The brief: a showcase for a team that pays me to **run** the platform - so I run the parts myself instead of paying AWS more to run them.
-
-| Part | Managed AWS option | Why it runs in the cluster |
-| --- | --- | --- |
-| Kafka | MSK | MSK costs more than the nodes it would replace. Strimzi gives the same 3-broker setup from 2 files |
-| MongoDB | DocumentDB / Atlas | Same cost reason. DocumentDB is also only Mongo-compatible, not real MongoDB |
-| Secrets | Secrets Manager | Vault generates the passwords itself and works the same on any cloud |
-| Monitoring | CloudWatch | SigNoz keeps logs, metrics and traces in one place, with no per-GB cost |
-
-The tradeoff: more for me to run and upgrade. With a real team and budget, MSK and a managed database would be the first things I'd move out.
+**Why not AWS managed services (MSK, DocumentDB, Secrets Manager, CloudWatch)?** The brief is a showcase for a team that pays me to **run** the platform, so I run the parts myself instead of paying AWS more to run them - each choice is compared in [Tools and why](#tools-and-why). The tradeoff: more for me to run and upgrade. With a real team and budget, MSK and a managed database would be the first things I'd move out.
 
 ### Repos
-
-Two repos:
 
 | Repo | Holds |
 | --- | --- |
 | `python-kafka-mongo` (this one) | App code, Dockerfiles, tests, CI/CD workflows, Terraform, load + chaos tests |
 | `python-kafka-mongo-gitops` | What runs in the cluster: ArgoCD apps, Kafka/Mongo/Vault manifests, the shop Helm chart |
 
-Terraform builds AWS (VPC, EKS, load balancer controller, DNS, KMS) and installs ArgoCD. ArgoCD then deploys everything else from the GitOps repo.
+This repo:
+
+```text
+api/                 api server (FastAPI) + Dockerfile
+client/              web page + client server (FastAPI) + Dockerfile
+tests/               pytest + Testcontainers; load/buy.js is the k6 test
+chaos/               Chaos Mesh experiments
+terraform/           AWS + ArgoCD, destroy.sh
+.github/workflows/   ci.yml, release.yml
+docs/images/         screenshots used below
+docker-compose.yml   the first, laptop-only version
+CHANGELOG.md         written by release-please
+```
+
+## Running it
+
+Needs:
+
+- AWS CLI (logged in), Terraform, kubectl, Docker (for k6)
+- Made once, outside Terraform: an S3 bucket for the Terraform state (`providers.tf`), a Route 53 hosted zone for the domain and a wildcard ACM certificate (`variables.tf`)
+- `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]` (gitignored)
+
+```bash
+cd terraform
+terraform init
+terraform apply -auto-approve   # ~15 min, then ArgoCD needs ~5 more
+aws eks update-kubeconfig --name leaky-pipeline --region us-east-1
+./destroy.sh                    # ~15 min
+```
+
+ArgoCD UI (in its own terminal, it keeps running): `kubectl port-forward -n argocd svc/argocd-server 8443:443`, then <https://localhost:8443>.
+
+The cluster is destroyed at the end of each day and rebuilt from git when needed.
+
+Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist: the load balancer blocks the VPC from being deleted, and the disks would be left behind, still costing money. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
+
+Load + chaos test (cluster up):
+
+```bash
+kubectl apply -f chaos/chaos-test.yaml
+docker run --rm -i grafana/k6:2.1.0 run - < tests/load/buy.js
+```
 
 ## The story in screenshots
 
@@ -192,7 +208,7 @@ The first version ran with docker compose. The api was stopped, a buy was made, 
 | The shop: deployed by the release bot, KEDA scaler, Ingress, Vault secret | ![shop tree](docs/images/07-argocd-shop-tree.png) |
 | Kafka: 2 small files -> Strimzi builds 3 brokers, 3 disks, the topic (+29 more objects) | ![kafka tree](docs/images/08-argocd-kafka-tree.png) |
 | Kafka network: clients connect to one address, 3 brokers behind it | ![kafka network](docs/images/09-argocd-kafka-network.png) |
-| The Kafka app's 4 pods (3 brokers + topic operator) spread one per node. Each node shows kernel 6.18 (pinned, see Notes) | ![nodes](docs/images/10-nodes-kernel.png) |
+| The Kafka app's 4 pods (3 brokers + topic operator) spread one per node. Each node shows kernel 6.18 (pinned, see [Issues and fixes](#issues-and-fixes)) | ![nodes](docs/images/10-nodes-kernel.png) |
 | Vault: 3 pods, 3 disks, active + standby | ![vault](docs/images/11-argocd-vault.png) |
 
 ### 4. It's live
@@ -213,7 +229,7 @@ Every pull request must pass 6 checks. Merging a release builds the images, push
 
 ### 6. Breaking it on purpose
 
-k6 sends ~170 buys per second for 3 minutes. Chaos Mesh kills a Kafka broker and slows the api down by 100 ms.
+k6 sends ~170 buys per second for 3 minutes. Chaos Mesh kills a Kafka broker and adds 100 ms of network delay to the api.
 
 | | |
 | --- | --- |
@@ -240,26 +256,6 @@ After a rebuild, one of the 3 MongoDB members couldn't start (no node had enough
 | 86 destroyed | ![destroy](docs/images/22-destroy.png) |
 | AWS check: no VPC, cluster, nodes, disks or load balancers | ![clean](docs/images/23-aws-clean.png) |
 
-## Running it
-
-Needs an AWS account, Terraform, kubectl, and `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]`:
-
-```bash
-cd terraform
-terraform init
-terraform apply -auto-approve   # ~15 min, then ArgoCD needs ~5 more
-./destroy.sh                    # ~15 min
-```
-
-Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist: the load balancer blocks the VPC from being deleted, and the disks would be left behind, still costing money. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
-
-Load + chaos test (cluster up):
-
-```bash
-kubectl apply -f chaos/chaos-test.yaml
-docker run --rm -i grafana/k6:2.1.0 run - < tests/load/buy.js
-```
-
 ## CI/CD
 
 Both pipelines run on **GitHub Actions** (`.github/workflows/`). GitHub Flow: every change goes through a pull request to `main`, which is protected. Commit messages follow Conventional Commits (`feat:`, `fix:`), which decide the next version.
@@ -285,21 +281,25 @@ GitHub Actions never touches the cluster - it only writes to git, and ArgoCD pul
 
 ## Tools and why
 
-| Area | Tool | Why |
-| --- | --- | --- |
-| Infra | Terraform | Whole AWS setup in code, one command up and down |
-| Platform | EKS (4 nodes, 3 AZs) | Kafka and Mongo clusters next to the apps, self-healing, scaling. Losing one AZ still leaves a majority |
-| Deploy | ArgoCD (app of apps) | Git is the truth; the cluster matches it |
-| Kafka | Strimzi | Runs a 3-broker Kafka from 2 small files |
-| Database | MongoDB operator | 3-member replica set |
-| Secrets | Vault + Vault Secrets Operator | Passwords generated by Vault, never in git. Vault unlocks itself with AWS KMS |
-| Load balancer | AWS LB Controller + ExternalDNS | Ingress -> ALB with HTTPS, DNS record made automatically |
-| Scaling | KEDA | Scales the api on Kafka backlog, not CPU |
-| Monitoring | OpenTelemetry + SigNoz | Logs, metrics and traces in one place |
-| Tests | pytest + Testcontainers, k6, Chaos Mesh | Real dependencies in tests, load, and failure testing |
-| Security | Gitleaks, CodeQL, Trivy | Secrets, code and image/infra scanning |
-| CI/CD | GitHub Actions | CI on every pull request, release on every merge |
-| Release | release-please, GHCR | Versions and changelog from commit messages |
+How I picked, in order: 1) the standard choice for the job, 2) covers a part of the lifecycle, 3) new to me - my previous project already used Prometheus/Grafana, Jenkins, GitLab CI and External Secrets.
+
+| Area | Picked | Instead of | Why this one |
+| --- | --- | --- | --- |
+| Infra | Terraform | CloudFormation, CDK, Pulumi | Works on any cloud, and the official AWS VPC/EKS modules do most of the heavy lifting |
+| Platform | EKS | ECS, plain EC2, self-run Kubernetes | Operators for Kafka/Mongo/Vault need Kubernetes; ECS has none. AWS runs the control plane, so I don't (see [Why run it in Kubernetes](#why-run-it-in-kubernetes)) |
+| Deploy | ArgoCD | Flux, kubectl from CI | Pull model - no cluster credentials in CI. Its UI shows sync and health live, which Flux doesn't have built in |
+| Kafka | Strimzi | Confluent operator, Bitnami chart, MSK | Free CNCF project; brokers and topics are plain Kubernetes objects. Confluent's operator is paid, Bitnami images moved behind a subscription, MSK costs more |
+| Database | MongoDB operator (official) | Percona operator, Bitnami chart, DocumentDB | Made by MongoDB, free, real MongoDB 8.0. DocumentDB is only Mongo-compatible |
+| Secrets | Vault + Vault Secrets Operator | Secrets Manager + External Secrets, Sealed Secrets | Vault generates the passwords itself - nobody types them, and they're never in git (Sealed Secrets still keeps them in git, encrypted). New to me; I'd used External Secrets before |
+| Load balancer | AWS LB Controller + ExternalDNS | ingress-nginx | Real AWS ALB with the ACM certificate, no extra proxy pods. ingress-nginx was retired by Kubernetes in March 2026 |
+| Scaling | KEDA | HPA on CPU | The real signal is orders waiting in Kafka. CPU stays low while orders pile up, so a CPU scaler reacts late |
+| Monitoring | OpenTelemetry + SigNoz | Prometheus + Grafana + Loki + Tempo, Datadog, CloudWatch | One tool for logs, metrics and traces instead of four, all on the OpenTelemetry standard. Free, unlike Datadog. Grafana stack I'd already used |
+| Integration tests | pytest + Testcontainers | Mocks, docker compose in CI | Tests run against real Kafka and Mongo, started and thrown away by the test itself |
+| Load test | k6 | JMeter, Locust | The test is one short JS file run from one Docker image, with pass/fail thresholds built in. JMeter is XML and a GUI |
+| Chaos | Chaos Mesh | LitmusChaos, AWS FIS | Experiments are short YAML files (kill a pod, add network delay). Litmus needs its own portal; FIS works at the AWS level, not per pod |
+| Security | Gitleaks, CodeQL, Trivy | TruffleHog, SonarQube, Snyk | All free in GitHub Actions. Trivy alone covers both the images and the Terraform |
+| CI/CD | GitHub Actions | Jenkins, GitLab CI | Code is already on GitHub, no CI server to run. Jenkins and GitLab I'd already used |
+| Release | release-please + GHCR | semantic-release; ECR, Docker Hub | A release PR means a human approves each release - semantic-release releases straight away. GHCR sits next to the code, public images are free, no AWS keys in CI |
 
 ## Issues and fixes
 
@@ -307,24 +307,16 @@ The main ones (symptom -> cause -> fix):
 
 - **MongoDB member stuck Pending** -> its helper container reserved 500m CPU by default and no node had room -> lowered it to 100m. The operator waited for all members before applying the change, so the stuck pod was patched and recreated once.
 - **Destroy hung on SigNoz** -> its database (ClickHouse) has a lock that its operator keeps adding back -> the script removes it in a loop until SigNoz is gone.
-- **MongoDB 8.0 crashes on new nodes** -> kernel 6.19+ -> node image pinned.
+- **MongoDB 8.0 crashes on new nodes** -> kernel 6.19+, and every apply took the newest node image -> image pinned (`ami_release_version` in `eks.tf`).
 - **KEDA never scaled under load** -> the api was too fast for a backlog to build -> chaos test slows it down to show scaling.
 - **SigNoz collectors wouldn't start** -> no organization existed -> admin user + org created at startup, password from Vault.
 - **Trivy failed the images** -> old libraries inside pip itself -> pip removed from the final images.
 - **Release PR didn't run CI** -> PRs made by the default GitHub token don't trigger workflows -> a personal token is used.
 
-## Notes
-
-- **Node image pinned** (`ami_release_version` in `eks.tf`): MongoDB 8.0 crashes on kernel 6.19+, and every apply would otherwise take the newest image.
-- **Vault TLS is off inside the cluster** - traffic stays inside the private network. In production I'd turn it on.
-- **EKS API is public but locked to my IP** (`admin_cidrs`), so kubectl works from my laptop. Trivy flags it; accepted in `.trivyignore` with the reason.
-- **ArgoCD is not reachable from the internet** - it checks git every 3 minutes instead of using a webhook.
-- **Free plan sizing:** largest allowed node is m7i-flex.large (2 vCPU / 8 GB). 4 nodes, ~24 GB of the 32 GB used.
-- **Daily destroy:** the cluster is destroyed at the end of each day and rebuilt from git when needed.
-
 ## What I'd add for production
 
-- Vault TLS inside the cluster, and one NAT per AZ.
+- Vault TLS inside the cluster - today it's plain HTTP, which is OK only because it never leaves the private network.
+- One NAT per AZ.
 - Alert rules in SigNoz (the outage above was found by hand, not by an alert).
-- An ArgoCD webhook (needs ArgoCD reachable from GitHub), instead of polling every 3 minutes.
+- An ArgoCD webhook instead of checking git every 3 minutes. ArgoCD isn't reachable from the internet today, so it can't receive one.
 - Reserved CPU checked for every container - including the helpers that operators add.
