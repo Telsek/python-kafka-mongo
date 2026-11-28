@@ -34,25 +34,21 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    NET((Internet)) --> ALB
+    NET((Internet))
     subgraph VPC["VPC 10.0.0.0/16 - us-east-1"]
         subgraph PUB["Public subnets"]
             ALB[ALB + HTTPS]
             NAT[NAT gateway]
         end
-        subgraph A["AZ a - private 10.0.16.0/20"]
-            N1["node 1<br/>Kafka · Mongo · Vault"]
-        end
-        subgraph B["AZ b - private 10.0.32.0/20"]
-            N2["node 2<br/>Kafka · Mongo · Vault"]
-        end
-        subgraph C["AZ c - private 10.0.48.0/20"]
-            N3["node 3<br/>Kafka · Mongo · Vault"]
-            N4["node 4<br/>SigNoz, apps, operators"]
+        subgraph PRIV["Private subnets - EKS nodes"]
+            direction LR
+            A["AZ a<br/>node 1<br/>Kafka · Mongo · Vault"]
+            B["AZ b<br/>node 2<br/>Kafka · Mongo · Vault"]
+            C["AZ c<br/>node 3: Kafka · Mongo · Vault<br/>node 4: SigNoz, apps, operators"]
         end
     end
-    ALB --> N1 & N2 & N3 & N4
-    N1 & N2 & N3 & N4 -.->|outbound only| NAT --> NET
+    NET --> ALB --> PRIV
+    PRIV -.->|outbound only| NAT -.-> NET
 ```
 
 | | |
