@@ -30,6 +30,52 @@ flowchart LR
     A & C -.->|traces, logs, metrics| S[SigNoz]
 ```
 
+### AWS infrastructure
+
+```mermaid
+flowchart TB
+    NET((Internet)) --> ALB
+    subgraph VPC["VPC 10.0.0.0/16 - us-east-1"]
+        subgraph PUB["Public subnets"]
+            ALB[ALB + HTTPS]
+            NAT[NAT gateway]
+        end
+        subgraph A["AZ a - private 10.0.16.0/20"]
+            N1["node 1<br/>Kafka · Mongo · Vault"]
+        end
+        subgraph B["AZ b - private 10.0.32.0/20"]
+            N2["node 2<br/>Kafka · Mongo · Vault"]
+        end
+        subgraph C["AZ c - private 10.0.48.0/20"]
+            N3["node 3<br/>Kafka · Mongo · Vault"]
+            N4["node 4<br/>SigNoz, apps, operators"]
+        end
+    end
+    ALB --> N1 & N2 & N3 & N4
+    N1 & N2 & N3 & N4 -.->|outbound only| NAT --> NET
+```
+
+| | |
+| --- | --- |
+| VPC | 3 AZs. Public subnets (10.0.1-3.0/24) hold only the ALB and the NAT. Nodes and pods live in private subnets (/20 each - every pod gets a VPC IP) |
+| NAT | One for all AZs - saves cost. Tradeoff: if its AZ goes down, nodes lose outbound internet (the shop keeps working) |
+| Nodes | 4 x m7i-flex.large (2 vCPU / 8 GB) - the largest type on the AWS free plan. 32 GB total, ~24 GB used |
+| Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
+| EKS API | Public, but only reachable from my IP |
+
+Node sizing (memory reserved, estimate):
+
+| Node | Main pods | ~GB of 8 |
+| --- | --- | --- |
+| 1 | Kafka broker (2), Mongo (1), Vault, small pods | 5.4 |
+| 2 | Kafka broker (2), Mongo (1), Vault, small pods | 6.1 |
+| 3 | Kafka broker (2), Mongo (1), Vault, small pods | 6.4 |
+| 4 | SigNoz + ClickHouse (~3), ArgoCD, operators, shop | 6.6 |
+
+The exact pod placement is decided by Kubernetes at each build; the rule is one Kafka / Mongo / Vault per AZ.
+
+### Repos
+
 Two repos:
 
 | Repo | Holds |
