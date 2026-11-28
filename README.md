@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/Telsek/python-kafka-mongo/actions/workflows/ci.yml/badge.svg)](https://github.com/Telsek/python-kafka-mongo/actions/workflows/ci.yml) [![release](https://github.com/Telsek/python-kafka-mongo/actions/workflows/release.yml/badge.svg)](https://github.com/Telsek/python-kafka-mongo/actions/workflows/release.yml)
 
-A small shop (Harry Potter sweets + LOTR artifacts with DevOps jokes) used to show the full DevOps lifecycle: build, test, release, deploy, scale, break, monitor and tear down - all from git.
+A small shop (Harry Potter sweets + LOTR artifacts with DevOps jokes) built to demonstrate the full DevOps lifecycle: build, test, release, deploy, scale, break, monitor and tear down - all from git.
 
 You buy something -> the **client** sends it to **Kafka** -> the **api** reads Kafka and saves it in **MongoDB** -> the page shows everything bought. If the api or the database is down, the order waits safely in Kafka and is saved once they're back.
 
@@ -12,13 +12,15 @@ Live (when the cluster is up): <https://shop.mansuraforecast.online>
 
 - [How it works](#how-it-works)
 - [Running it](#running-it)
-- [The story in screenshots](#the-story-in-screenshots)
+- [Walkthrough in screenshots](#walkthrough-in-screenshots)
 - [CI/CD](#cicd)
 - [Tools and why](#tools-and-why)
 - [Issues and fixes](#issues-and-fixes)
 - [What I'd add for production](#what-id-add-for-production)
 
 ## How it works
+
+Below: the main flow, the AWS network, what runs inside the cluster, and why it's built this way.
 
 ```mermaid
 flowchart LR
@@ -31,8 +33,6 @@ flowchart LR
     V[Vault] -.->|Mongo password via VSO| A
     A & C -.->|traces, logs, metrics| S[SigNoz]
 ```
-
-Below: the AWS network, what runs inside the cluster, and why it's built this way.
 
 ### AWS infrastructure
 
@@ -121,7 +121,7 @@ Terraform installs ArgoCD and the AWS add-ons in `kube-system`. ArgoCD installs 
 
 | Component | On plain EC2 I'd have to | In the cluster |
 | --- | --- | --- |
-| Kafka (3 brokers) | Install Kafka on 3 machines, set up the quorum, attach a disk to each, restart a dead broker myself | Strimzi builds all 3 from 2 short files, one per AZ, each with its own disk, and restarts a dead one (tested - see [chapter 6](#6-breaking-it-on-purpose)) |
+| Kafka (3 brokers) | Install Kafka on 3 machines, set up the quorum, attach a disk to each, restart a dead broker myself | Strimzi builds all 3 from 2 short files, one per AZ, each with its own disk, and restarts a dead one (tested - see [chapter 6](#6-load-and-chaos-testing)) |
 | MongoDB (3 members) | Install 3 servers, start the replica set, create the users, rejoin a member after a failure | The operator builds the replica set and the user. The password comes from Vault |
 | Vault (3 pods) | Install 3 servers, join them, set up unlocking | Helm chart: 3 pods, one per AZ, unlock with KMS. A Job does the first-time setup |
 | client + api | An Auto Scaling Group and load balancer target group per service | Deployments + one Ingress. KEDA scales the api on Kafka backlog in seconds |
@@ -147,13 +147,13 @@ chaos/               Chaos Mesh experiments
 terraform/           AWS + ArgoCD, destroy.sh
 .github/workflows/   ci.yml, release.yml
 docs/images/         screenshots used below
-docker-compose.yml   the first, laptop-only version
+docker-compose.yml   local run (chapter 1)
 CHANGELOG.md         written by release-please
 ```
 
 ## Running it
 
-Needs AWS CLI, Terraform, kubectl, Docker, and - made once by hand - an S3 state bucket, a Route 53 zone and a wildcard ACM certificate for your domain (set `domain` in `variables.tf`). Put your IP in `terraform/terraform.tfvars`: `admin_cidrs = ["<your IP>/32"]`.
+Needs AWS CLI, Terraform, kubectl, Docker, and three things created once manually: an S3 state bucket, a Route 53 zone and a wildcard ACM certificate for your domain (set `domain` in `variables.tf`). Put your IP in `terraform/terraform.tfvars`: `admin_cidrs = ["<your IP>/32"]`.
 
 ```bash
 cd terraform
@@ -165,14 +165,14 @@ aws eks update-kubeconfig --name leaky-pipeline --region us-east-1
 kubectl apply -f ../chaos/chaos-test.yaml
 docker run --rm -i grafana/k6:2.1.0 run - < ../tests/load/buy.js
 
-./destroy.sh                       # ~15 min - removes the ALB and disks Kubernetes made, then terraform destroy
+./destroy.sh                       # ~15 min (see chapter 8)
 ```
 
-## The story in screenshots
+## Walkthrough in screenshots
 
-### 1. It started on a laptop
+### 1. Local test with docker compose
 
-The first version ran with docker compose. The api was stopped, a buy was made, and it waited in Kafka until the api came back.
+Before AWS, the same app ran locally with docker compose. The api was stopped, a buy was made, and it waited in Kafka until the api came back.
 
 | | |
 | --- | --- |
@@ -181,7 +181,7 @@ The first version ran with docker compose. The api was stopped, a buy was made, 
 | api back, logs show the save | ![logs](docs/images/03-local-logs.png) |
 | The buy is in the list | ![after restart](docs/images/04-local-after-restart.png) |
 
-### 2. One command builds AWS
+### 2. Build: one command
 
 `terraform apply` creates 86 resources. ArgoCD comes up and deploys the other 14 apps from git - nothing installed by hand.
 
@@ -190,7 +190,7 @@ The first version ran with docker compose. The api was stopped, a buy was made, 
 | Terraform apply | ![apply](docs/images/05-terraform-apply.png) |
 | ArgoCD: all 15 apps (the root app + 14) healthy | ![argocd apps](docs/images/06-argocd-apps.png) |
 
-### 3. What got deployed
+### 3. What's deployed
 
 | | |
 | --- | --- |
@@ -200,14 +200,14 @@ The first version ran with docker compose. The api was stopped, a buy was made, 
 | The Kafka app's 4 pods (3 brokers + topic operator) spread one per node. Each node shows kernel 6.18 (pinned, see [Issues and fixes](#issues-and-fixes)) | ![nodes](docs/images/10-nodes-kernel.png) |
 | Vault: 3 pods, 3 disks, active + standby | ![vault](docs/images/11-argocd-vault.png) |
 
-### 4. It's live
+### 4. Live on EKS
 
 | | |
 | --- | --- |
 | Shop on EKS | ![eks shop](docs/images/12-eks-shop.png) |
 | Pods + load balancer address | ![pods ingress](docs/images/13-eks-pods-ingress.png) |
 
-### 5. Shipping a change
+### 5. CI/CD in action
 
 Every pull request must pass 6 checks. Merging a release builds the images, pushes them to GHCR and writes the new version into the GitOps repo - ArgoCD deploys it.
 
@@ -216,9 +216,9 @@ Every pull request must pass 6 checks. Merging a release builds the images, push
 | 6 required checks | ![ci](docs/images/14-ci-checks.png) |
 | Release: version -> images -> GitOps | ![release](docs/images/15-release-run.png) |
 
-### 6. Breaking it on purpose
+### 6. Load and chaos testing
 
-Run twice. Each time k6 sends 150-170 buys per second for 3 minutes while Chaos Mesh kills a Kafka broker. The second run also adds 100 ms of network delay to the api, so orders pile up and KEDA has something to scale on.
+The test was run twice. Each time k6 sent 150-170 buys per second for 3 minutes while Chaos Mesh killed a Kafka broker. The second run also added 100 ms of network delay to the api, so a backlog builds up for KEDA to scale on.
 
 | | |
 | --- | --- |
@@ -226,7 +226,7 @@ Run twice. Each time k6 sends 150-170 buys per second for 3 minutes while Chaos 
 | Second run: orders pile up in Kafka -> KEDA scales the api 2 -> 6 | ![keda](docs/images/17-keda-scaled.png) |
 | Second run: 31,355 buys, 0 failed | ![k6](docs/images/18-k6-chaos.png) |
 
-### 7. A real outage
+### 7. Real incident: MongoDB outage
 
 After a rebuild, one of the 3 MongoDB members couldn't start (no node had enough CPU left to reserve). Until it was fixed - about 10 minutes - the api couldn't use the database. 4 buys were made during that time.
 
@@ -236,7 +236,7 @@ After a rebuild, one of the 3 MongoDB members couldn't start (no node had enough
 | Mongo fixed - all 4 buys were saved, none lost | ![buys survived](docs/images/20-buys-survived-mongo.png) |
 | SigNoz trace of one buy: client sent it at 13:25:11, api saved it ~10 minutes later (top: 9.95 mins). It waited in Kafka the whole time | ![trace](docs/images/21-signoz-trace.png) |
 
-### 8. Tearing it down
+### 8. Teardown
 
 `destroy.sh` removes what Kubernetes created (load balancer, disks), then runs `terraform destroy`. Nothing is left behind.
 
@@ -275,15 +275,15 @@ How I picked, in order: 1) the standard choice for the job, 2) covers a part of 
 | Area | Picked | Instead of | Why this one |
 | --- | --- | --- | --- |
 | Infra | Terraform | CloudFormation, CDK, Pulumi | The industry standard, and not tied to AWS. AWS's own VPC and EKS modules for Terraform built most of the network and cluster for me |
-| Platform | EKS | ECS, plain EC2, self-run Kubernetes | Kafka, Mongo and Vault each have a Kubernetes operator that runs the cluster for me - ECS can't run those. AWS runs the Kubernetes control plane, so I don't have to (see [Why run it in Kubernetes](#why-run-it-in-kubernetes)) |
+| Platform | EKS | ECS, plain EC2, self-run Kubernetes | Kafka, Mongo and Vault each have a Kubernetes operator that runs the cluster for me - ECS can't run those. AWS runs the Kubernetes control plane, so I don't (see [Why run it in Kubernetes](#why-run-it-in-kubernetes)) |
 | Deploy | ArgoCD | Flux, kubectl from CI | ArgoCD pulls from git, so GitHub never needs a key to the cluster. Its web UI shows every app's state live - the screenshots above. Flux works the same way but has no UI of its own |
-| Kafka | Strimzi | Confluent operator, Bitnami chart, MSK | Free. I describe the Kafka cluster in 2 files and Strimzi creates and repairs the brokers. Confluent's operator costs money, Bitnami's free images are gone, MSK costs more than my nodes |
-| Database | MongoDB operator (official) | Percona operator, Bitnami chart, DocumentDB | Made by MongoDB itself, free, runs real MongoDB 8.0. DocumentDB only imitates MongoDB, so some features behave differently |
+| Kafka | Strimzi | Confluent operator, Bitnami chart, MSK | Free. I describe the Kafka cluster in 2 files and Strimzi creates and repairs the brokers. Confluent's operator costs money, Bitnami's free images were discontinued, MSK costs more than my nodes |
+| Database | MongoDB operator (official) | Percona operator, Bitnami chart, DocumentDB | Made by MongoDB itself, free, runs real MongoDB 8.0. DocumentDB is only MongoDB-compatible, so some features behave differently |
 | Secrets | Vault + Vault Secrets Operator | Secrets Manager + External Secrets, Sealed Secrets | Vault creates the passwords itself - no person ever sees or types them, and they never touch git. Sealed Secrets would still put them in git (encrypted). New to me; I'd used External Secrets before |
 | Load balancer | AWS LB Controller + ExternalDNS | ingress-nginx | Traffic goes straight from a real AWS load balancer (with my HTTPS certificate) to the pods - no extra proxy to run. ingress-nginx was retired by Kubernetes in March 2026 |
 | Scaling | KEDA | HPA on CPU | Orders waiting in Kafka is what tells me the api is behind. The api's CPU stays low even while orders pile up, so scaling on CPU would add pods too late |
 | Monitoring | OpenTelemetry + SigNoz | Prometheus + Grafana + Loki + Tempo, Datadog, CloudWatch | Logs, metrics and traces in one tool instead of four, so one buy can be followed from click to database (the trace in chapter 7). Free, unlike Datadog. I'd already used the Grafana stack |
-| Integration tests | pytest + Testcontainers | Mocks, docker compose in CI | Each test run starts a real Kafka and a real Mongo, then deletes them. Mocks would only test my guess of how Kafka behaves |
+| Integration tests | pytest + Testcontainers | Mocks, docker compose in CI | Each test run starts a real Kafka and a real Mongo, then deletes them. Mocks would only test assumptions about how Kafka behaves |
 | Load test | k6 | JMeter, Locust | My whole test is one short JavaScript file in git (`tests/load/buy.js`), easy to read and review. It runs with one `docker run` - nothing to install. It marks itself failed if more than 1% of buys fail or get slow. JMeter tests are built in a desktop app and saved as long XML files, hard to read in git. Locust (Python) would also work, but pass/fail needs extra code |
 | Chaos | Chaos Mesh | LitmusChaos, AWS FIS | Each experiment is a short YAML file - "kill one Kafka broker", "slow the api by 100 ms" - applied with kubectl. Litmus needs its own web portal. AWS FIS breaks things at the AWS level (whole machines), not single pods |
 | Security | Gitleaks, CodeQL, Trivy | TruffleHog, SonarQube, Snyk | All free and run inside GitHub Actions - no extra accounts or servers. One tool, Trivy, scans both the images and the Terraform |
@@ -306,6 +306,6 @@ The main ones (symptom -> cause -> fix):
 
 - Vault TLS inside the cluster - today it's plain HTTP, which is OK only because it never leaves the private network.
 - One NAT per AZ.
-- Alert rules in SigNoz (the outage above was found by hand, not by an alert).
+- Alert rules in SigNoz (the MongoDB outage was spotted manually, not by an alert).
 - An ArgoCD webhook instead of checking git every 3 minutes. ArgoCD isn't reachable from the internet today, so it can't receive one.
 - Reserved CPU checked for every container - including the helpers that operators add.
