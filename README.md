@@ -53,9 +53,6 @@ flowchart TB
 | Spread | Kafka, Mongo and Vault each run 3 copies, one per AZ. Losing an AZ still leaves 2 of 3 - a majority, so they keep working |
 | EKS API | Public, but only reachable from my IP (`admin_cidrs`). Trivy flags it; accepted in `.trivyignore` with the reason |
 
-<details>
-<summary>Node sizing - memory per node</summary>
-
 Memory requested per node (planning estimate, example layout). Each node has 8 GB.
 
 | Node | Main pods | Memory requested | Node usage |
@@ -65,8 +62,6 @@ Memory requested per node (planning estimate, example layout). Each node has 8 G
 | 3 | Kafka broker (2 GB), Mongo (1 GB), Vault, small pods | 6.4 GB | 80% |
 | 4 | SigNoz + ClickHouse (~3 GB), ArgoCD, operators, shop | 6.6 GB | 83% |
 | **Total** | | **24.5 GB** | **77% of 32 GB** |
-
-</details>
 
 Kubernetes decides the exact placement at each build; the only fixed rule is one Kafka / Mongo / Vault per AZ. In practice **CPU** turned out to be the tighter limit: reserved CPU was 62-95% per node (see the MongoDB issue below).
 
@@ -112,9 +107,6 @@ Terraform installs ArgoCD and the AWS add-ons in `kube-system`. ArgoCD installs 
 
 **Why not plain EC2 machines?** On EC2 every part below would need its own machines, install scripts and failover handling:
 
-<details>
-<summary>Component by component</summary>
-
 | Component | On plain EC2 I'd have to | In the cluster |
 | --- | --- | --- |
 | Kafka (3 brokers) | Install Kafka on 3 machines, set up the quorum, attach a disk to each, restart a dead broker myself | Strimzi builds all 3 from 2 short files, one per AZ, each with its own disk, and restarts a dead one (tested - see [chapter 6](#6-breaking-it-on-purpose)) |
@@ -123,8 +115,6 @@ Terraform installs ArgoCD and the AWS add-ons in `kube-system`. ArgoCD installs 
 | client + api | An Auto Scaling Group and load balancer target group per service | Deployments + one Ingress. KEDA scales the api on Kafka backlog in seconds |
 | SigNoz + collectors | A monitoring server, plus an agent installed on every machine | Helm chart. One collector per node, automatically |
 | All of it | Ship changes with SSH / Ansible, ~10+ machines | git push -> ArgoCD. Packed onto 4 shared nodes |
-
-</details>
 
 **Why not AWS managed services (MSK, DocumentDB, Secrets Manager, CloudWatch)?** The brief is a showcase for a team that pays me to **run** the platform, so I run the parts myself instead of paying AWS more to run them - each choice is compared in [Tools and why](#tools-and-why). The tradeoff: more for me to run and upgrade. With a real team and budget, MSK and a managed database would be the first things I'd move out.
 
@@ -151,31 +141,19 @@ CHANGELOG.md         written by release-please
 
 ## Running it
 
-Needs:
-
-- AWS CLI (logged in), Terraform, kubectl, Docker (for k6)
-- Made once, outside Terraform: an S3 bucket for the Terraform state (`providers.tf`), a Route 53 hosted zone for the domain and a wildcard ACM certificate (`variables.tf`)
-- `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]` (gitignored)
+Needs AWS CLI, Terraform, kubectl, Docker, and - made once by hand - an S3 state bucket, a Route 53 zone and a wildcard ACM certificate. Put your IP in `terraform/terraform.tfvars`: `admin_cidrs = ["<your IP>/32"]`.
 
 ```bash
 cd terraform
 terraform init
-terraform apply -auto-approve   # ~15 min, then ArgoCD needs ~5 more
+terraform apply -auto-approve      # ~15 min + ~5 for ArgoCD
 aws eks update-kubeconfig --name leaky-pipeline --region us-east-1
-./destroy.sh                    # ~15 min
-```
 
-ArgoCD UI (in its own terminal, it keeps running): `kubectl port-forward -n argocd svc/argocd-server 8443:443`, then <https://localhost:8443>.
-
-The cluster is destroyed at the end of each day and rebuilt from git when needed.
-
-Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist: the load balancer blocks the VPC from being deleted, and the disks would be left behind, still costing money. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
-
-Load + chaos test (cluster up):
-
-```bash
+# load + chaos test (from the repo root)
 kubectl apply -f chaos/chaos-test.yaml
 docker run --rm -i grafana/k6:2.1.0 run - < tests/load/buy.js
+
+./destroy.sh                       # ~15 min - removes the ALB and disks Kubernetes made, then terraform destroy
 ```
 
 ## The story in screenshots
@@ -282,28 +260,23 @@ GitHub Actions never touches the cluster - it only writes to git, and ArgoCD pul
 
 How I picked, in order: 1) the standard choice for the job, 2) covers a part of the lifecycle, 3) new to me - my previous project already used Prometheus/Grafana, Jenkins, GitLab CI and External Secrets.
 
-<details>
-<summary>Each tool vs the alternatives (15 areas)</summary>
-
 | Area | Picked | Instead of | Why this one |
 | --- | --- | --- | --- |
-| Infra | Terraform | CloudFormation, CDK, Pulumi | Works on any cloud, and the official AWS VPC/EKS modules do most of the heavy lifting |
-| Platform | EKS | ECS, plain EC2, self-run Kubernetes | Operators for Kafka/Mongo/Vault need Kubernetes; ECS has none. AWS runs the control plane, so I don't (see [Why run it in Kubernetes](#why-run-it-in-kubernetes)) |
-| Deploy | ArgoCD | Flux, kubectl from CI | Pull model - no cluster credentials in CI. Its UI shows sync and health live, which Flux doesn't have built in |
-| Kafka | Strimzi | Confluent operator, Bitnami chart, MSK | Free CNCF project; brokers and topics are plain Kubernetes objects. Confluent's operator is paid, Bitnami images moved behind a subscription, MSK costs more |
-| Database | MongoDB operator (official) | Percona operator, Bitnami chart, DocumentDB | Made by MongoDB, free, real MongoDB 8.0. DocumentDB is only Mongo-compatible |
-| Secrets | Vault + Vault Secrets Operator | Secrets Manager + External Secrets, Sealed Secrets | Vault generates the passwords itself - nobody types them, and they're never in git (Sealed Secrets still keeps them in git, encrypted). New to me; I'd used External Secrets before |
-| Load balancer | AWS LB Controller + ExternalDNS | ingress-nginx | Real AWS ALB with the ACM certificate, no extra proxy pods. ingress-nginx was retired by Kubernetes in March 2026 |
-| Scaling | KEDA | HPA on CPU | The real signal is orders waiting in Kafka. CPU stays low while orders pile up, so a CPU scaler reacts late |
-| Monitoring | OpenTelemetry + SigNoz | Prometheus + Grafana + Loki + Tempo, Datadog, CloudWatch | One tool for logs, metrics and traces instead of four, all on the OpenTelemetry standard. Free, unlike Datadog. Grafana stack I'd already used |
-| Integration tests | pytest + Testcontainers | Mocks, docker compose in CI | Tests run against real Kafka and Mongo, started and thrown away by the test itself |
-| Load test | k6 | JMeter, Locust | The test is one short JS file run from one Docker image, with pass/fail thresholds built in. JMeter is XML and a GUI |
-| Chaos | Chaos Mesh | LitmusChaos, AWS FIS | Experiments are short YAML files (kill a pod, add network delay). Litmus needs its own portal; FIS works at the AWS level, not per pod |
-| Security | Gitleaks, CodeQL, Trivy | TruffleHog, SonarQube, Snyk | All free in GitHub Actions. Trivy alone covers both the images and the Terraform |
-| CI/CD | GitHub Actions | Jenkins, GitLab CI | Code is already on GitHub, no CI server to run. Jenkins and GitLab I'd already used |
-| Release | release-please + GHCR | semantic-release; ECR, Docker Hub | A release PR means a human approves each release - semantic-release releases straight away. GHCR sits next to the code, public images are free, no AWS keys in CI |
-
-</details>
+| Infra | Terraform | CloudFormation, CDK, Pulumi | The industry standard, and not tied to AWS. AWS's own VPC and EKS modules for Terraform built most of the network and cluster for me |
+| Platform | EKS | ECS, plain EC2, self-run Kubernetes | Kafka, Mongo and Vault each have a Kubernetes operator that runs the cluster for me - ECS can't run those. AWS runs the Kubernetes control plane, so I don't have to (see [Why run it in Kubernetes](#why-run-it-in-kubernetes)) |
+| Deploy | ArgoCD | Flux, kubectl from CI | ArgoCD pulls from git, so GitHub never needs a key to the cluster. Its web UI shows every app's state live - the screenshots above. Flux works the same way but has no UI of its own |
+| Kafka | Strimzi | Confluent operator, Bitnami chart, MSK | Free. I describe the Kafka cluster in 2 files and Strimzi creates and repairs the brokers. Confluent's operator costs money, Bitnami's free images are gone, MSK costs more than my nodes |
+| Database | MongoDB operator (official) | Percona operator, Bitnami chart, DocumentDB | Made by MongoDB itself, free, runs real MongoDB 8.0. DocumentDB only imitates MongoDB, so some features behave differently |
+| Secrets | Vault + Vault Secrets Operator | Secrets Manager + External Secrets, Sealed Secrets | Vault creates the passwords itself - no person ever sees or types them, and they never touch git. Sealed Secrets would still put them in git (encrypted). New to me; I'd used External Secrets before |
+| Load balancer | AWS LB Controller + ExternalDNS | ingress-nginx | Traffic goes straight from a real AWS load balancer (with my HTTPS certificate) to the pods - no extra proxy to run. ingress-nginx was retired by Kubernetes in March 2026 |
+| Scaling | KEDA | HPA on CPU | Orders waiting in Kafka is what tells me the api is behind. The api's CPU stays low even while orders pile up, so scaling on CPU would add pods too late |
+| Monitoring | OpenTelemetry + SigNoz | Prometheus + Grafana + Loki + Tempo, Datadog, CloudWatch | Logs, metrics and traces in one tool instead of four, so one buy can be followed from click to database (the trace in chapter 7). Free, unlike Datadog. I'd already used the Grafana stack |
+| Integration tests | pytest + Testcontainers | Mocks, docker compose in CI | Each test run starts a real Kafka and a real Mongo, then deletes them. Mocks would only test my guess of how Kafka behaves |
+| Load test | k6 | JMeter, Locust | My whole test is one short JavaScript file in git (`tests/load/buy.js`), easy to read and review. It runs with one `docker run` - nothing to install. It marks itself failed if more than 1% of buys fail or get slow. JMeter tests are built in a desktop app and saved as long XML files, hard to read in git. Locust (Python) would also work, but pass/fail needs extra code |
+| Chaos | Chaos Mesh | LitmusChaos, AWS FIS | Each experiment is a short YAML file - "kill one Kafka broker", "slow the api by 100 ms" - applied with kubectl. Litmus needs its own web portal. AWS FIS breaks things at the AWS level (whole machines), not single pods |
+| Security | Gitleaks, CodeQL, Trivy | TruffleHog, SonarQube, Snyk | All free and run inside GitHub Actions - no extra accounts or servers. One tool, Trivy, scans both the images and the Terraform |
+| CI/CD | GitHub Actions | Jenkins, GitLab CI | The code already lives on GitHub, so there's no CI server to run or pay for. I'd already used Jenkins and GitLab |
+| Release | release-please + GHCR | semantic-release; ECR, Docker Hub | release-please opens a release PR, so I approve each release before it happens - semantic-release releases right away. GHCR stores the images next to the code, free for public images, and CI needs no AWS keys to push |
 
 ## Issues and fixes
 
