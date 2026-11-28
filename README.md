@@ -71,6 +71,34 @@ Node sizing - memory reserved per node (planning estimate, example layout):
 
 Kubernetes decides the exact placement at each build; the only fixed rule is one Kafka / Mongo / Vault per AZ. In practice **CPU** turned out to be the tighter limit: reserved CPU was 62-95% per node (see the MongoDB issue below).
 
+### Inside the cluster
+
+Each box is a namespace. Terraform installs ArgoCD and the AWS add-ons; ArgoCD installs everything else from the GitOps repo.
+
+```mermaid
+flowchart LR
+    GIT[(GitOps repo)] --> ARGO["argocd<br/>ArgoCD"]
+    TF[Terraform] --> ARGO & KS
+    subgraph EKS["EKS cluster"]
+        ARGO
+        KS["kube-system<br/>LB controller · ExternalDNS · EBS disks"]
+        subgraph SHOP["shop"]
+            CL[client x2]
+            API[api 2-6]
+        end
+        K["kafka<br/>Strimzi + 3 brokers"]
+        M["mongodb<br/>operator + 3 members"]
+        V["vault<br/>3 pods + VSO"]
+        KE[keda]
+        S["signoz<br/>SigNoz · ClickHouse · OTel collectors"]
+        CH[chaos-mesh]
+    end
+    ARGO -->|deploys| SHOP & K & M & V & KE & S & CH
+    CL -->|buy| K -->|read| API -->|save| M
+    V -.->|Mongo password| API
+    KE -.->|scales| API
+```
+
 ### Repos
 
 Two repos:
