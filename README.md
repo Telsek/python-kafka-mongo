@@ -1,97 +1,198 @@
-# Python, Kafka & MongoDB
-
-Shop app for the Kafka/Mongo task. You buy something, it goes to Kafka, the API server saves it in Mongo, and the page shows everything bought. The shop is Harry Potter sweets and LOTR items with DevOps jokes, just for fun.
-
-Runs locally with docker compose, and on AWS (ECS Fargate) with Terraform.
-
+# The Leaky Pipeline - Python, Kafka & MongoDB on EKS
+ 
+A small shop (Harry Potter sweets + LOTR artifacts with DevOps jokes) used to show the full DevOps lifecycle: build, test, release, deploy, scale, break, monitor and tear down - all from git.
+ 
+You buy something -> the **client** sends it to **Kafka** -> the **api** reads Kafka and saves it in **MongoDB** -> the page shows everything bought. If the api or the database is down, the order waits safely in Kafka and is saved once they're back.
+ 
+Live (when the cluster is up): <https://shop.mansuraforecast.online>
+ 
 ## Index
-
-- [Python, Kafka \& MongoDB](#python-kafka--mongodb)
-  - [Index](#index)
-  - [How it works](#how-it-works)
-  - [Running it](#running-it)
-  - [Testing](#testing)
-  - [Screenshots](#screenshots)
-  - [Burndown](#burndown)
-  - [Notes](#notes)
-
+ 
+- [How it works](#how-it-works)
+- [The story in screenshots](#the-story-in-screenshots)
+- [Running it](#running-it)
+- [CI/CD](#cicd)
+- [Tools and why](#tools-and-why)
+- [Issues and fixes](#issues-and-fixes)
+- [Notes](#notes)
 ## How it works
-
-The client server (FastAPI) serves the page, sends buys to Kafka and asks the API server for the list. The API server (FastAPI) reads Kafka in the background, saves to Mongo and returns the list.
-
+ 
 ```mermaid
 flowchart LR
-    U[Browser] --> L[ALB / localhost]
-    L --> C[Client server]
-    C -->|buy| K[(Kafka)]
-    K --> A[API server]
-    A --> M[(MongoDB)]
-    C -->|getAllBoughtItems| A
+    U[Browser] --> ALB[ALB + HTTPS]
+    ALB --> C[client]
+    C -->|buy| K[(Kafka x3)]
+    K --> A[api, 2-6 pods by KEDA]
+    A --> M[(MongoDB x3)]
+    C -->|list| A
+    V[Vault] -.->|Mongo password via VSO| A
+    A & C -.->|traces, logs, metrics| S[SigNoz]
 ```
-
+ 
+Two repos:
+ 
+| Repo | Holds |
+| --- | --- |
+| `python-kafka-mongo` (this one) | App code, Dockerfiles, tests, CI/CD workflows, Terraform, load + chaos tests |
+| `python-kafka-mongo-gitops` | What runs in the cluster: ArgoCD apps, Kafka/Mongo/Vault manifests, the shop Helm chart |
+ 
+Terraform builds AWS (VPC, EKS, load balancer controller, DNS, KMS) and installs ArgoCD. ArgoCD then deploys everything else from the GitOps repo.
+ 
+## The story in screenshots
+ 
+### 1. It started on a laptop
+ 
+The first version ran with docker compose. The api was stopped, a buy was made, and it waited in Kafka until the api came back.
+ 
+| | |
+| --- | --- |
+| Shop | ![local shop](docs/images/01-local-shop.png) |
+| api down, buy still accepted | ![api down](docs/images/02-local-api-down.png) |
+| api back, logs show the save | ![logs](docs/images/03-local-logs.png) |
+| The buy is in the list | ![after restart](docs/images/04-local-after-restart.png) |
+ 
+### 2. One command builds AWS
+ 
+`terraform apply` creates 86 resources. ArgoCD comes up and deploys all 15 apps from git - nothing installed by hand.
+ 
+| | |
+| --- | --- |
+| Terraform apply | ![apply](docs/images/05-terraform-apply.png) |
+| ArgoCD: 15 apps, all healthy | ![argocd apps](docs/images/06-argocd-apps.png) |
+ 
+### 3. What got deployed
+ 
+| | |
+| --- | --- |
+| The shop: deployed by the release bot, KEDA scaler, Ingress, Vault secret | ![shop tree](docs/images/07-argocd-shop-tree.png) |
+| Kafka: 2 small files -> Strimzi builds 3 brokers, 3 disks, the topic (+29 more objects) | ![kafka tree](docs/images/08-argocd-kafka-tree.png) |
+| Kafka network: clients connect to one address, 3 brokers behind it | ![kafka network](docs/images/09-argocd-kafka-network.png) |
+| 4 nodes, one Kafka broker each, kernel 6.18 (pinned, see Notes) | ![nodes](docs/images/10-nodes-kernel.png) |
+| Vault: 3 pods, 3 disks, active + standby | ![vault](docs/images/11-argocd-vault.png) |
+ 
+### 4. It's live
+ 
+| | |
+| --- | --- |
+| Shop on EKS | ![eks shop](docs/images/12-eks-shop.png) |
+| Pods + load balancer address | ![pods ingress](docs/images/13-eks-pods-ingress.png) |
+ 
+### 5. Shipping a change
+ 
+Every pull request must pass 6 checks. Merging a release builds the images, pushes them to GHCR and writes the new version into the GitOps repo - ArgoCD deploys it.
+ 
+| | |
+| --- | --- |
+| 6 required checks | ![ci](docs/images/14-ci-checks.png) |
+| Release: version -> images -> GitOps | ![release](docs/images/15-release-run.png) |
+ 
+### 6. Breaking it on purpose
+ 
+k6 sends ~170 buys per second for 3 minutes. Chaos Mesh kills a Kafka broker and slows the api down by 100 ms.
+ 
+| | |
+| --- | --- |
+| A broker was killed and came back | ![broker killed](docs/images/16-broker-killed.png) |
+| Orders pile up in Kafka -> KEDA scales the api 2 -> 6 | ![keda](docs/images/17-keda-scaled.png) |
+| 31,355 buys, 0 failed | ![k6](docs/images/18-k6-chaos.png) |
+ 
+### 7. A real outage
+ 
+After a rebuild, one MongoDB member couldn't start (not enough CPU reserved on any node). The api lost its database for about 10 minutes. 4 buys were made during that time.
+ 
+| | |
+| --- | --- |
+| SigNoz: logs, traces and metrics all coming in, api error rate up during the outage | ![signoz](docs/images/19-signoz-home.png) |
+| Mongo fixed - all 4 buys were saved, none lost | ![buys survived](docs/images/20-buys-survived-mongo.png) |
+| The trace of one buy: sent at 13:25, saved ~10 minutes later. It waited in Kafka the whole time | ![trace](docs/images/21-signoz-trace.png) |
+ 
+### 8. Tearing it down
+ 
+`destroy.sh` removes what Kubernetes created (load balancer, disks), then runs `terraform destroy`. Nothing is left behind.
+ 
+| | |
+| --- | --- |
+| 86 destroyed | ![destroy](docs/images/22-destroy.png) |
+| AWS check: no VPC, cluster, nodes, disks or load balancers | ![clean](docs/images/23-aws-clean.png) |
+ 
 ## Running it
-
-Locally:
-
-```bash
-docker compose up -d --build
-```
-
-Then open <http://localhost:8080>
-
-On AWS:
-
+ 
+Needs `terraform/terraform.tfvars` with `admin_cidrs = ["<your IP>/32"]`):
+ 
 ```bash
 cd terraform
 terraform init
-terraform apply -auto-approve     # ~3 min
-terraform destroy -auto-approve
+terraform apply -auto-approve   # ~10 min, ArgoCD needs ~5 more
+./destroy.sh                    # ~15 min
 ```
-
-Then open <https://shop.mansuraforecast.online>
-
-Terraform builds the VPC, an ALB with HTTPS, the DNS record, ECR (and builds/pushes the images), and the 4 containers on ECS Fargate. Only the ALB is public. The state bucket, DNS zone and cert were made once and aren't part of it.
-
-## Testing
-
-Locally: stopped the API server, bought something, started it again. The buy waited in Kafka and got saved once the API was back (Horn of Gondor).
-
-On AWS: set the api service to 0 tasks, bought 2 items, then set it back to 1. A brand new api container started and saved both straight away (Mithril TLS Vest and Palantír Dashboard in the logs screenshot).
-
-Also did a full destroy + apply, bought an item right after and it showed up straight away. Checked after destroy that nothing was left.
-
-## Screenshots
-
-| What | Screenshot |
+ 
+Why a destroy script and not just `terraform destroy`: the load balancer, DNS record and disks are created by Kubernetes controllers, not by Terraform. Terraform doesn't know they exist, and they block the VPC from being deleted. The script deletes the apps first, waits until AWS has removed those, then runs `terraform destroy`.
+ 
+Load + chaos test (cluster up):
+ 
+```bash
+kubectl apply -f chaos/chaos-test.yaml
+docker run --rm -i grafana/k6:2.1.0 run - < tests/load/buy.js
+```
+ 
+## CI/CD
+ 
+Both pipelines run on **GitHub Actions** (`.github/workflows/`). GitHub Flow: every change goes through a pull request to `main`, which is protected. Commit messages follow Conventional Commits (`feat:`, `fix:`), which decide the next version.
+ 
+**CI** - `ci.yml`, GitHub Actions, on every pull request. All 6 must pass to merge:
+ 
+| Check | What |
 | --- | --- |
-| Shop | ![shop](docs/images/01-shop.png) |
-| API down | ![api down](docs/images/02-api-down.png) |
-| API logs after restart | ![api logs](docs/images/03-logs.png) |
-| List after restart | ![after restart](docs/images/04-after-restart.png) |
-| Shop on AWS | ![aws shop](docs/images/05-aws-shop.png) |
-| ECS services | ![ecs services](docs/images/06-ecs-services.png) |
-| ECR | ![ecr](docs/images/07-ecr.png) |
-| Terraform apply | ![terraform apply](docs/images/08-terraform-apply.png) |
-| AWS: API down | ![aws api down](docs/images/09-aws-api-down.png) |
-| AWS: API logs after restart | ![aws api logs](docs/images/10-aws-api-logs.png) |
-| AWS: list after restart | ![aws after restart](docs/images/11-aws-after-restart.png) |
-
-## Burndown
-
-| # | Task | Status |
+| gitleaks | No secrets in the code or history |
+| tests | pytest with real Kafka + Mongo in throwaway containers (Testcontainers) |
+| codeql | Code security scan |
+| images (api), images (client) | Build each image and scan it with Trivy |
+| terraform-scan | Trivy scan of the Terraform |
+ 
+**CD** - two halves:
+ 
+| Half | Tool | What |
 | --- | --- | --- |
-| 1 | Design + review | done |
-| 2 | Compose: Kafka + Mongo | done |
-| 3 | API + client servers | done |
-| 4 | Frontend + theme | done |
-| 5 | Testing | done |
-| 6 | Terraform on AWS | done |
-| 7 | Destroy/apply test | done |
-| 8 | API down test on AWS | done |
-
+| Delivery | GitHub Actions (`release.yml`, on every merge to `main`) | release-please opens a release PR (version + changelog). Merging it builds the images, pushes them to GHCR with the version tag, and writes the version into the GitOps repo |
+| Deployment | ArgoCD (in the cluster) | Sees the new version in the GitOps repo and deploys it |
+ 
+GitHub Actions never touches the cluster - it only writes to git, and ArgoCD pulls from git (pull model). So no cluster credentials live in GitHub.
+ 
+## Tools and why
+ 
+| Area | Tool | Why |
+| --- | --- | --- |
+| Infra | Terraform | Whole AWS setup in code, one command up and down |
+| Platform | EKS (4 nodes, 3 AZs) | Kafka and Mongo clusters next to the apps, self-healing, scaling. Losing one AZ still leaves a majority |
+| Deploy | ArgoCD (app of apps) | Git is the truth; the cluster matches it |
+| Kafka | Strimzi | Runs a 3-broker Kafka from 2 small files |
+| Database | MongoDB operator | 3-member replica set |
+| Secrets | Vault + Vault Secrets Operator | Passwords generated by Vault, never in git. Vault unlocks itself with AWS KMS |
+| Load balancer | AWS LB Controller + ExternalDNS | Ingress -> ALB with HTTPS, DNS record made automatically |
+| Scaling | KEDA | Scales the api on Kafka backlog, not CPU |
+| Monitoring | OpenTelemetry + SigNoz | Logs, metrics and traces in one place |
+| Tests | pytest + Testcontainers, k6, Chaos Mesh | Real dependencies in tests, load, and failure testing |
+| Security | Gitleaks, CodeQL, Trivy | Secrets, code and image/infra scanning |
+| CI/CD | GitHub Actions | CI on every pull request, release on every merge |
+| Release | release-please, GHCR | Versions and changelog from commit messages |
+ 
+## Issues and fixes
+ 
+The main ones (symptom -> cause -> fix):
+ 
+- **MongoDB member stuck Pending** -> its helper container reserved 500m CPU by default and no node had room -> lowered it to 100m. The operator waited for all members before applying the change, so the stuck pod was patched and recreated once.
+- **Destroy hung on SigNoz** -> its database (ClickHouse) has a lock that its operator keeps adding back -> the script removes it in a loop until SigNoz is gone.
+- **MongoDB 8.0 crashes on new nodes** -> kernel 6.19+ -> node image pinned.
+- **KEDA never scaled under load** -> the api was too fast for a backlog to build -> chaos test slows it down to show scaling.
+- **SigNoz collectors wouldn't start** -> no organization existed -> admin user + org created at startup, password from Vault.
+- **Trivy failed the images** -> old libraries inside pip itself -> pip removed from the final images.
+- **Release PR didn't run CI** -> PRs made by the default GitHub token don't trigger workflows -> a personal token is used.
 ## Notes
-
-- Kafka runs without ZooKeeper (KRaft mode), so it's one container instead of two
-- Package and image versions are fixed so a rebuild never pulls something new and breaks. Mongo and the Python base image are fixed to the minor version, so they still get patch updates
-- On AWS the shop first took ~5 min to work after apply, because the API started before kafka and mongo. Now Terraform starts those two first and waits
-- For real production I'd use private subnets + NAT, MSK for Kafka, DocumentDB for Mongo, and build the images in CI
+ 
+- **Node image pinned** (`ami_release_version` in `eks.tf`): MongoDB 8.0 crashes on kernel 6.19+, and every apply would otherwise take the newest image.
+- **Vault TLS is off inside the cluster** - traffic stays inside the private network. In production I'd turn it on.
+- **EKS API is public but locked to my IP** (`admin_cidrs`), so kubectl works from my laptop. Trivy flags it; accepted in `.trivyignore` with the reason.
+- **ArgoCD is not reachable from the internet** - it checks git every 3 minutes instead of using a webhook.
+- **Free plan sizing:** largest allowed node is m7i-flex.large (2 vCPU / 8 GB). 4 nodes, ~24 GB of the 32 GB used.
+- **Daily destroy:** the cluster is destroyed every evening and rebuilt from git when needed.
+ 
